@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 mod database;
@@ -121,31 +122,36 @@ fn main() -> Result<()> {
                 }
             }
             SearchType::Rom { name, crc, md5, sha1 } => {
-                if name.is_none() && crc.is_none() && md5.is_none() && sha1.is_none() {
+                let mut criteria = HashMap::new();
+                let mut fuzzy_criteria = HashMap::new();
+                //inserting the name, crc, md5, and sha1 values into the criteria HashMap if they are not None
+                if let Some(name) = name {
+                    //always fuzzy search by name
+                    fuzzy_criteria.insert("name", name.as_str());
+                }
+                if let Some(crc) = crc {
+                    criteria.insert("crc", crc.as_str());
+                }
+                if let Some(md5) = md5 {
+                    criteria.insert("md5", md5.as_str());
+                }
+                if let Some(sha1) = sha1 {
+                    criteria.insert("sha1", sha1.as_str());
+                }
+
+                if criteria.is_empty() && fuzzy_criteria.is_empty() {
                     return Err(anyhow!("Please provide at least one search criterion (name, crc, md5, or sha1)"));
                 }
 
-                let results = db
-                    .search_roms(name.as_deref(), crc.as_deref(), md5.as_deref(), sha1.as_deref())
-                    .context("Failed to search database")?;
+                let results = db.search_roms(&criteria, &fuzzy_criteria).context("Failed to search database")?;
                 if !results.is_empty() {
                     println!("Found {} matching game(s)", results.len());
                     for (game, roms) in results {
                         print_game_with_roms(&game, &roms);
                     }
                 } else {
-                    let criteria = vec![
-                        name.as_ref().map(|n| format!("name: {}", n)),
-                        crc.as_ref().map(|c| format!("crc: {}", c)),
-                        md5.as_ref().map(|m| format!("md5: {}", m)),
-                        sha1.as_ref().map(|s| format!("sha1: {}", s)),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                    println!("No ROMs found matching criteria: {}", criteria);
+                    let args = criteria.iter().chain(fuzzy_criteria.iter()).map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ");
+                    println!("No ROMs found matching criteria: {}", args);
                 }
             }
         },

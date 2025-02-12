@@ -1,6 +1,7 @@
-use anyhow::Result;
-use rusqlite::{Connection, params};
 use crate::models::{DataFile, Game, Rom};
+use anyhow::Result;
+use rusqlite::{params, Connection};
+use std::collections::HashMap;
 
 pub struct Database {
     conn: Connection,
@@ -11,7 +12,7 @@ impl Database {
         let conn = Connection::open(path)?;
         Ok(Self { conn })
     }
-    
+
     pub fn initialize(&mut self) -> Result<()> {
         let tx = self.conn.transaction()?;
 
@@ -44,7 +45,7 @@ impl Database {
 
     pub fn merge_data(&mut self, data: DataFile) -> Result<()> {
         let tx = self.conn.transaction()?;
-        
+
         for game in data.games {
             tx.execute(
                 "INSERT OR REPLACE INTO games (name, category, description) 
@@ -53,24 +54,14 @@ impl Database {
             )?;
 
             // Delete existing ROMs for this game
-            tx.execute(
-                "DELETE FROM roms WHERE game_name = ?1",
-                params![game.name],
-            )?;
+            tx.execute("DELETE FROM roms WHERE game_name = ?1", params![game.name])?;
 
             // Insert new ROMs
             for rom in game.roms {
                 tx.execute(
                     "INSERT INTO roms (game_name, name, size, crc, md5, sha1) 
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        game.name,
-                        rom.name,
-                        rom.size,
-                        rom.crc,
-                        rom.md5,
-                        rom.sha1,
-                    ],
+                    params![game.name, rom.name, rom.size, rom.crc, rom.md5, rom.sha1,],
                 )?;
             }
         }
@@ -78,7 +69,6 @@ impl Database {
         tx.commit()?;
         Ok(())
     }
-
 
     pub fn search_by_game_name(&self, name: &str) -> Result<Vec<(Game, Vec<Rom>)>> {
         self.fetch_games_and_roms(
@@ -92,29 +82,20 @@ impl Database {
 
     pub fn search_roms(
         &self,
-        name: Option<&str>,
-        crc: Option<&str>,
-        md5: Option<&str>,
-        sha1: Option<&str>,
+        criteria: &HashMap<&str, &str>,
+        fuzzy_criteria: &HashMap<&str, &str>,
     ) -> Result<Vec<(Game, Vec<Rom>)>> {
         let mut conditions = Vec::new();
         let mut params = Vec::new();
 
-        if let Some(name) = name {
-            conditions.push("r.name = ?");
-            params.push(name.to_string());
+        for (key, value) in criteria.into_iter() {
+            conditions.push(format!("r.{} = ?", key));
+            params.push(value.to_string());
         }
-        if let Some(crc) = crc {
-            conditions.push("r.crc = ?");
-            params.push(crc.to_string());
-        }
-        if let Some(md5) = md5 {
-            conditions.push("r.md5 = ?");
-            params.push(md5.to_string());
-        }
-        if let Some(sha1) = sha1 {
-            conditions.push("r.sha1 = ?");
-            params.push(sha1.to_string());
+
+        for (key, value) in fuzzy_criteria.into_iter() {
+            conditions.push(format!("r.{} LIKE ?", key));
+            params.push(format!("%{}%", value));
         }
 
         let query = format!(
@@ -130,7 +111,7 @@ impl Database {
 
     fn fetch_games_and_roms(&self, query: &str, params: &[String]) -> Result<Vec<(Game, Vec<Rom>)>> {
         let mut stmt = self.conn.prepare(query)?;
-        let rows = stmt.query_map( rusqlite::params_from_iter(params), |row| {
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
             Ok((
                 Game {
                     name: row.get(0)?,
@@ -144,17 +125,19 @@ impl Database {
                     crc: row.get(5)?,
                     md5: row.get(6)?,
                     sha1: row.get(7)?,
-                }
+                },
             ))
         })?;
 
-        let mut games_map = std::collections::HashMap::new();
-        
+        let mut games_map = HashMap::new();
+
         for row in rows {
             let (game, rom) = row?;
-            games_map.entry(game.name.clone())
+            games_map
+                .entry(game.name.clone())
                 .or_insert_with(|| (game, Vec::new()))
-                .1.push(rom);
+                .1
+                .push(rom);
         }
 
         let results: Vec<_> = games_map.into_values().collect();
