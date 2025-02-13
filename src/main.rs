@@ -13,6 +13,14 @@ mod database;
 mod models;
 mod xml_parser;
 
+macro_rules! debug_log {
+    ($debug:expr, $($arg:tt)*) => {
+        if $debug {
+            eprintln!("{}", format!("Debug: {}", format!($($arg)*)));
+        }
+    };
+}
+
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -48,18 +56,13 @@ enum DisplayMethod {
 
 #[derive(Subcommand)]
 enum Commands {
-    Initialize {
-        #[arg(short, long)]
-        input: PathBuf,
-    },
-    Import {
-        #[arg(short, long)]
-        input: PathBuf,
-    },
-    Search {
+    /// Perform a database operation
+    Database {
+        
         #[command(subcommand)]
-        search_type: SearchType,
+        db_command: DbCommands,
     },
+    /// Scan a directory for ROMs
     Scan {
         /// Hash method to use
         #[arg(short, long, value_enum, default_value = "sha1")]
@@ -76,6 +79,27 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         directory: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum DbCommands {
+    /// Initialize the database
+    Initialize {
+        /// Path to the XML file to import
+        #[arg(short, long)]
+        input: PathBuf,
+    },
+    /// Import data into the database
+    Import {
+        /// Path to the XML file to import
+        #[arg(short, long)]
+        input: PathBuf,
+    },
+    /// Search the database
+    Search {
+        #[command(subcommand)]
+        search_type: SearchType,
+    }
 }
 
 #[derive(Subcommand)]
@@ -174,9 +198,7 @@ fn scan_directory(
     }
 
     println!("Scanning directory: {}", directory.display());
-    if debug {
-        println!("Debug: Using hash type: {}", hash_type);
-    }
+    debug_log!(debug, "Using hash type: {}", hash_type);
 
     let mut game_status: BTreeMap<String, GameStatus> = BTreeMap::new();
 
@@ -210,9 +232,7 @@ fn scan_directory(
             continue;
         }
 
-        if debug {
-            println!("\nDebug: Processing file: {}", filename);
-        }
+        debug_log!(debug, "\nDebug: Processing file: {}", filename);
 
         // Read file contents
         let mut file = fs::File::open(&path)?;
@@ -222,9 +242,7 @@ fn scan_directory(
         // Calculate hash
         let hash = calculate_hash(&buffer, hash_type)?;
 
-        if debug {
-            println!("Debug: Calculated {} hash: {}", hash_type, hash);
-        }
+        debug_log!(debug, "Calculated {} hash: {}", hash_type, hash);
 
         // Search database for matches
         let mut criteria = HashMap::new();
@@ -233,16 +251,12 @@ fn scan_directory(
         let results = db.search_roms(&criteria, &HashMap::new())?;
 
         if results.is_empty() {
-            if debug {
-                println!("Debug: No matches found in database");
-            }
+            debug_log!(debug, "No matches found in database");
             if file_display == DisplayMethod::Miss || file_display == DisplayMethod::NotExact {
                 println!("[MISS] {}", filename);
             }
         } else {
-            if debug {
-                println!("Debug: Found {} matching entries in database", results.len());
-            }
+            debug_log!(debug, "Found {} matching entries in database", results.len());
 
             let mut exact_match = None;
             let mut partial_matches = Vec::new();
@@ -264,33 +278,31 @@ fn scan_directory(
                 });
                 for rom in roms {
                     if debug {
-                        println!("Debug: Comparing with database entry:");
-                        println!("Debug:   Game: {}", game.name);
-                        println!("Debug:   ROM: {}", rom.name);
-                        println!("Debug:   Size: {}", rom.size);
+                        debug_log!(debug, "Comparing with database entry:");
+                        debug_log!(debug, "  Game: {}", game.name);
+                        debug_log!(debug, "  ROM: {}", rom.name);
+                        debug_log!(debug, "  Size: {}", rom.size);
                         match hash_type {
                             HashMethod::Crc => {
                                 if let Some(h) = &rom.crc {
-                                    println!("Debug:   CRC: {}", h)
+                                    debug_log!(debug, "  CRC: {}", h)
                                 }
                             }
                             HashMethod::Md5 => {
                                 if let Some(h) = &rom.md5 {
-                                    println!("Debug:   MD5: {}", h)
+                                    debug_log!(debug, "  MD5: {}", h)
                                 }
                             }
                             HashMethod::Sha1 => {
                                 if let Some(h) = &rom.sha1 {
-                                    println!("Debug:   SHA1: {}", h)
+                                    debug_log!(debug, "  SHA1: {}", h)
                                 }
                             }
                         }
                     }
 
                     if rom.name == filename {
-                        if debug {
-                            println!("Debug: Found exact match");
-                        }
+                        debug_log!(debug, "Found exact match");
                         exact_match = Some(game.name.clone());
                         game_entry.exact_matches.insert(filename.to_string());
                     } else {
@@ -357,75 +369,77 @@ fn main() -> Result<()> {
     let mut db = database::Database::new(&cli.database).context("Failed to connect to database")?;
 
     match &cli.command {
-        Commands::Initialize { input } => {
-            db.initialize().context("Failed to initialize database")?;
-
-            let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
-
-            db.merge_data(data).context("Failed to merge data into database")?;
-
-            println!("Initialize completed successfully");
-        }
-        Commands::Import { input } => {
-            let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
-
-            db.merge_data(data).context("Failed to merge data into database")?;
-
-            println!("Import completed successfully");
-        }
-        Commands::Search { search_type } => match search_type {
-            SearchType::Game { name } => {
-                let results = db.search_by_game_name(name, true).context("Failed to search database")?;
-                if !results.is_empty() {
-                    println!("Found {} matching game(s)", results.len());
-                    for (game, roms) in results {
-                        print_game_with_roms(&game, &roms);
-                    }
-                } else {
-                    println!("No games found matching name: {}", name);
-                }
+        Commands::Database { db_command } => match db_command{
+            DbCommands::Initialize { input } => {
+                db.initialize().context("Failed to initialize database")?;
+    
+                let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
+    
+                db.merge_data(data).context("Failed to merge data into database")?;
+    
+                println!("Initialize completed successfully");
             }
-            SearchType::Rom { name, crc, md5, sha1 } => {
-                let mut criteria = HashMap::new();
-                let mut fuzzy_criteria = HashMap::new();
-                //inserting the name, crc, md5, and sha1 values into the criteria HashMap if they are not None
-                if let Some(name) = name {
-                    //always fuzzy search by name
-                    fuzzy_criteria.insert("name", name.as_str());
-                }
-                if let Some(crc) = crc {
-                    criteria.insert("crc", crc.as_str());
-                }
-                if let Some(md5) = md5 {
-                    criteria.insert("md5", md5.as_str());
-                }
-                if let Some(sha1) = sha1 {
-                    criteria.insert("sha1", sha1.as_str());
-                }
-
-                if criteria.is_empty() && fuzzy_criteria.is_empty() {
-                    return Err(anyhow!("Please provide at least one search criterion (name, crc, md5, or sha1)"));
-                }
-
-                let results = db
-                    .search_roms(&criteria, &fuzzy_criteria)
-                    .context("Failed to search database")?;
-                if !results.is_empty() {
-                    println!("Found {} matching game(s)", results.len());
-                    for (game, roms) in results {
-                        print_game_with_roms(&game, &roms);
-                    }
-                } else {
-                    let args = criteria
-                        .iter()
-                        .chain(fuzzy_criteria.iter())
-                        .map(|(k, v)| format!("{k}: {v}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    println!("No ROMs found matching criteria: {}", args);
-                }
+            DbCommands::Import { input } => {
+                let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
+    
+                db.merge_data(data).context("Failed to merge data into database")?;
+    
+                println!("Import completed successfully");
             }
-        },
+            DbCommands::Search { search_type } => match search_type {
+                SearchType::Game { name } => {
+                    let results = db.search_by_game_name(name, true).context("Failed to search database")?;
+                    if !results.is_empty() {
+                        println!("Found {} matching game(s)", results.len());
+                        for (game, roms) in results {
+                            print_game_with_roms(&game, &roms);
+                        }
+                    } else {
+                        println!("No games found matching name: {}", name);
+                    }
+                }
+                SearchType::Rom { name, crc, md5, sha1 } => {
+                    let mut criteria = HashMap::new();
+                    let mut fuzzy_criteria = HashMap::new();
+                    //inserting the name, crc, md5, and sha1 values into the criteria HashMap if they are not None
+                    if let Some(name) = name {
+                        //always fuzzy search by name
+                        fuzzy_criteria.insert("name", name.as_str());
+                    }
+                    if let Some(crc) = crc {
+                        criteria.insert("crc", crc.as_str());
+                    }
+                    if let Some(md5) = md5 {
+                        criteria.insert("md5", md5.as_str());
+                    }
+                    if let Some(sha1) = sha1 {
+                        criteria.insert("sha1", sha1.as_str());
+                    }
+    
+                    if criteria.is_empty() && fuzzy_criteria.is_empty() {
+                        return Err(anyhow!("Please provide at least one search criterion (name, crc, md5, or sha1)"));
+                    }
+    
+                    let results = db
+                        .search_roms(&criteria, &fuzzy_criteria)
+                        .context("Failed to search database")?;
+                    if !results.is_empty() {
+                        println!("Found {} matching game(s)", results.len());
+                        for (game, roms) in results {
+                            print_game_with_roms(&game, &roms);
+                        }
+                    } else {
+                        let args = criteria
+                            .iter()
+                            .chain(fuzzy_criteria.iter())
+                            .map(|(k, v)| format!("{k}: {v}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        println!("No ROMs found matching criteria: {}", args);
+                    }
+                }
+            },
+        }
         Commands::Scan {
             method,
             file_display,
