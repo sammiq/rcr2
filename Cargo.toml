@@ -9,4 +9,7 @@ rusqlite = "0.33.0"
 anyhow = "1.0.95"
 clap = { version = "4.5.29", features = ["derive"] }
 serde = { version = "1.0.217", features = ["derive"] }
-
+crc32fast = "1.4.2"
+md-5 = "0.10.6"
+sha1 = "0.10.6"
+strum = { version = "0.27", features = ["derive"] }

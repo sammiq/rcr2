@@ -70,14 +70,22 @@ impl Database {
         Ok(())
     }
 
-    pub fn search_by_game_name(&self, name: &str) -> Result<Vec<(Game, Vec<Rom>)>> {
-        self.fetch_games_and_roms(
-            "SELECT g.name, g.category, g.description, r.name, r.size, r.crc, r.md5, r.sha1
+    pub fn search_by_game_name(&self, name: &str, fuzzy: bool) -> Result<Vec<(Game, Vec<Rom>)>> {
+        let query = "SELECT g.name, g.category, g.description, r.name, r.size, r.crc, r.md5, r.sha1
              FROM games g
-             JOIN roms r ON g.name = r.game_name
-             WHERE g.name LIKE ?",
-            &[format!("%{}%", name)],
-        )
+             JOIN roms r ON g.name = r.game_name";
+        
+        if fuzzy {
+            self.fetch_games_and_roms(
+                &format!("{} WHERE g.name LIKE ? ORDER BY g.name, r.name", query),
+                &[format!("%{}%", name)],
+            )
+        } else {
+            self.fetch_games_and_roms(
+                &format!("{} WHERE g.name = ? ORDER BY g.name, r.name", query),
+                &[name.to_string()],
+            )
+        }
     }
 
     pub fn search_roms(
@@ -102,7 +110,8 @@ impl Database {
             "SELECT g.name, g.category, g.description, r.name, r.size, r.crc, r.md5, r.sha1
              FROM games g
              JOIN roms r ON g.name = r.game_name
-             WHERE {}",
+             WHERE {}
+             ORDER BY g.name, r.name",
             conditions.join(" AND ")
         );
 
