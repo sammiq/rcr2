@@ -66,8 +66,17 @@ enum Commands {
         #[command(subcommand)]
         db_command: DbCommands,
     },
-    /// Scan a directory for ROMs
-    Scan {
+    /// Perform a file operation
+    File {
+        #[command(subcommand)]
+        file_command: FileCommands,
+    }
+}
+
+#[derive(Subcommand)]
+enum FileCommands {
+    /// Scan all files in the directory for ROMs
+    FullScan {
         /// Hash method to use
         #[arg(short, long, value_enum, default_value = "sha1")]
         method: HashMethod,
@@ -230,6 +239,13 @@ fn scan_directory(
             continue;
         }
 
+        let path = path.to_str();
+        // Skip files with strange paths
+        if path.is_none() {
+            continue;
+        }
+        
+        let path = path.unwrap();
         let filename = filename.unwrap();
             
         // Skip hidden files
@@ -260,6 +276,14 @@ fn scan_directory(
             if file_display == DisplayMethod::Miss || file_display == DisplayMethod::NotExact {
                 println!("[MISS] {}", filename);
             }
+            db.store_file(
+                &path,
+                &hash,
+                &hash_type.to_string(),
+                "miss",
+                None,
+                None,
+            )?;
         } else {
             debug_log!(debug, "Found {} matching entries in database", results.len());
 
@@ -310,14 +334,28 @@ fn scan_directory(
                         debug_log!(debug, "Found exact match");
                         exact_match = Some(game.name.clone());
                         game_entry.exact_matches.insert(filename.to_string());
+                        db.store_file(
+                            &path,
+                            &hash,
+                            &hash_type.to_string(),
+                            "exact",
+                            Some(&game.name),
+                            Some(&filename),
+                        )?;
+                        break;
                     } else {
                         partial_matches.push((game.name.clone(), rom.name.clone()));
                         let partials = game_entry.partial_matches.entry(rom.name.clone()).or_default();
                         partials.insert(filename.to_string());
+                        db.store_file(
+                            &path,
+                            &hash,
+                            &hash_type.to_string(),
+                            "partial",
+                            Some(&game.name),
+                            Some(&filename),
+                        )?;
                     }
-                }
-                if exact_match.is_some() {
-                    break;
                 }
             }
 
@@ -445,13 +483,15 @@ fn main() -> Result<()> {
                 }
             },
         }
-        Commands::Scan {
-            method,
-            file_display,
-            first_match,
-            directory,
-        } => {
-            scan_directory(&db, *method, directory, *first_match, *file_display, cli.debug).context("Failed to scan directory")?;
+        Commands::File { file_command } => match file_command {
+            FileCommands::FullScan {
+                method,
+                file_display,
+                first_match,
+                directory,
+            } => {
+                scan_directory(&db, *method, directory, *first_match, *file_display, cli.debug).context("Failed to scan directory")?;
+            }
         }
     }
 

@@ -39,7 +39,29 @@ impl Database {
             [],
         )?;
 
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS scanned_files (
+                path TEXT PRIMARY KEY,
+                hash TEXT NOT NULL,
+                hash_type TEXT NOT NULL,
+                match_type TEXT NOT NULL,
+                game_name TEXT,
+                rom_name TEXT,
+                FOREIGN KEY(game_name, rom_name) REFERENCES roms(game_name, name)
+            )",
+            [],
+        )?;
+
         tx.commit()?;
+        Ok(())
+    }
+
+    pub fn store_file(&self, path: &str, hash: &str, hash_type: &str, match_type: &str, game_name: Option<&str>, rom_name: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO scanned_files (path, hash, hash_type, match_type, game_name, rom_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![path, hash, hash_type, match_type, game_name, rom_name],
+        )?;
         Ok(())
     }
 
