@@ -92,6 +92,10 @@ enum FileCommands {
         /// Directory to scan (defaults to current directory)
         #[arg(short, long, default_value = ".")]
         directory: PathBuf,
+
+        /// List of file extensions to exclude, comma separated
+        #[arg(short, long, value_delimiter=',', default_value = "m3u,dat")]
+        exclude_extensions: Vec<String>,
     },
 }
 
@@ -202,6 +206,7 @@ fn scan_directory(
     first_match: bool,
     file_display: DisplayMethod,
     debug: bool,
+    exclude_extensions: &HashSet<String>,
 ) -> Result<()> {
     // Verify directory exists and is a directory
     if !directory.exists() {
@@ -230,10 +235,17 @@ fn scan_directory(
             continue;
         }
 
+        let extension = path
+            .extension()
+            .and_then(|n| n.to_str());
+        // Skip files with strange extensions
+        if extension.is_none() {
+            continue;
+        }
+
         let filename = path
             .file_name()
             .and_then(|n| n.to_str());
-
         // Skip files with strange names
         if filename.is_none() {
             continue;
@@ -245,14 +257,21 @@ fn scan_directory(
             continue;
         }
         
-        let path = path.unwrap();
+        let extension = extension.unwrap();
         let filename = filename.unwrap();
+        let path = path.unwrap();
             
         // Skip hidden files
         if filename.starts_with('.') {
             continue;
         }
 
+        // Skip files with excluded extensions
+        if exclude_extensions.contains(extension) {
+            debug_log!(debug, "Skipping file with excluded extension: {}", filename);
+            continue;
+        }
+ 
         debug_log!(debug, "\nDebug: Processing file: {}", filename);
 
         // Read file contents
@@ -489,8 +508,10 @@ fn main() -> Result<()> {
                 file_display,
                 first_match,
                 directory,
+                exclude_extensions,
             } => {
-                scan_directory(&db, *method, directory, *first_match, *file_display, cli.debug).context("Failed to scan directory")?;
+                let exclude: HashSet<String> = exclude_extensions.iter().cloned().collect();
+                scan_directory(&db, *method, directory, *first_match, *file_display, cli.debug, &exclude).context("Failed to scan directory")?;
             }
         }
     }
