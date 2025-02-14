@@ -1,4 +1,4 @@
-use crate::models::{DataFile, Game, Rom};
+use crate::models::{DataFile, Game, Rom, ScannedFile};
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
@@ -41,6 +41,7 @@ impl Database {
 
         tx.execute(
             "CREATE TABLE IF NOT EXISTS scanned_files (
+                base_path TEXT NOT NULL,
                 path TEXT PRIMARY KEY,
                 hash TEXT NOT NULL,
                 hash_type TEXT NOT NULL,
@@ -56,11 +57,20 @@ impl Database {
         Ok(())
     }
 
-    pub fn store_file(&self, path: &str, hash: &str, hash_type: &str, match_type: &str, game_name: Option<&str>, rom_name: Option<&str>) -> Result<()> {
+    pub fn store_file(
+        &self,
+        base_path: &str,
+        path: &str,
+        hash: &str,
+        hash_type: &str,
+        match_type: &str,
+        game_name: Option<&str>,
+        rom_name: Option<&str>,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO scanned_files (path, hash, hash_type, match_type, game_name, rom_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![path, hash, hash_type, match_type, game_name, rom_name],
+            "INSERT OR REPLACE INTO scanned_files (base_path, path, hash, hash_type, match_type, game_name, rom_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![base_path, path, hash, hash_type, match_type, game_name, rom_name],
         )?;
         Ok(())
     }
@@ -181,5 +191,52 @@ impl Database {
 
         let results: Vec<_> = games_map.into_values().collect();
         Ok(results)
+    }
+
+    pub fn get_scanned_file(&self, path: &str) -> Result<Option<ScannedFile>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT base_path, path, hash, hash_type, match_type, game_name, rom_name
+             FROM scanned_files
+             WHERE path = ?1",
+        )?;
+        let mut rows = stmt.query(params![path])?;
+
+        if let Some(row) = rows.next()? {
+            Ok(Some(ScannedFile {
+                base_path: row.get(0)?,
+                path: row.get(1)?,
+                hash: row.get(2)?,
+                hash_type: row.get(3)?,
+                match_type: row.get(4)?,
+                game_name: row.get(5)?,
+                rom_name: row.get(6)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_files_by_base_path(&self, base_path: &str) -> Result<Vec<ScannedFile>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT base_path, path, hash, hash_type, match_type, game_name, rom_name
+             FROM scanned_files
+             WHERE base_path = ?1",
+        )?;
+        let rows = stmt.query_map(params![base_path], |row| {
+            Ok(ScannedFile {
+                base_path: row.get(0)?,
+                path: row.get(1)?,
+                hash: row.get(2)?,
+                hash_type: row.get(3)?,
+                match_type: row.get(4)?,
+                game_name: row.get(5)?,
+                rom_name: row.get(6)?,
+            })
+        })?;
+        let mut scanned_files = Vec::new();
+        for row in rows {
+            scanned_files.push(row?);
+        }
+        Ok(scanned_files)
     }
 }

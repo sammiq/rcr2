@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Ok, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use crc32fast::Hasher;
 use md5::Md5;
@@ -97,6 +97,11 @@ enum FileCommands {
         #[arg(short, long, value_delimiter=',', default_value = "m3u,dat")]
         exclude_extensions: Vec<String>,
     },
+    Check {
+        /// Directory to scan (defaults to current directory)
+        #[arg(short, long, default_value = ".")]
+        directory: PathBuf,        
+    }
 }
 
 #[derive(Subcommand)]
@@ -216,7 +221,9 @@ fn scan_directory(
         return Err(anyhow!("Not a directory: {}", directory.display()));
     }
 
-    println!("Scanning directory: {}", directory.display());
+    let base_path = directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
+
+    println!("Scanning directory: {}", base_path);
     debug_log!(debug, "Using hash type: {}", hash_type);
 
     let mut game_status: BTreeMap<String, GameStatus> = BTreeMap::new();
@@ -257,9 +264,9 @@ fn scan_directory(
             continue;
         }
         
-        let extension = extension.unwrap();
-        let filename = filename.unwrap();
         let path = path.unwrap();
+        let filename = filename.unwrap();
+        let extension = extension.unwrap();
             
         // Skip hidden files
         if filename.starts_with('.') {
@@ -296,6 +303,7 @@ fn scan_directory(
                 println!("[MISS] {}", filename);
             }
             db.store_file(
+                base_path,
                 &path,
                 &hash,
                 &hash_type.to_string(),
@@ -354,6 +362,7 @@ fn scan_directory(
                         exact_match = Some(game.name.clone());
                         game_entry.exact_matches.insert(filename.to_string());
                         db.store_file(
+                            base_path,
                             &path,
                             &hash,
                             &hash_type.to_string(),
@@ -367,6 +376,7 @@ fn scan_directory(
                         let partials = game_entry.partial_matches.entry(rom.name.clone()).or_default();
                         partials.insert(filename.to_string());
                         db.store_file(
+                            base_path,
                             &path,
                             &hash,
                             &hash_type.to_string(),
@@ -512,9 +522,61 @@ fn main() -> Result<()> {
             } => {
                 let exclude: HashSet<String> = exclude_extensions.iter().cloned().collect();
                 scan_directory(&db, *method, directory, *first_match, *file_display, cli.debug, &exclude).context("Failed to scan directory")?;
+            },
+            FileCommands::Check { directory } => {
+                check_directory(&db, directory, cli.debug).context("Failed to check directory")?;
             }
         }
     }
 
+    Ok(())
+}
+
+fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool) -> Result<()> {
+    // Verify directory exists and is a directory
+    if !directory.exists() {
+        return Err(anyhow!("Directory does not exist: {}", directory.display()));
+    }
+    if !directory.is_dir() {
+        return Err(anyhow!("Not a directory: {}", directory.display()));
+    }
+
+    let base_path = directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
+
+    println!("Checking directory: {}", base_path);
+
+    // Get all entries in the database with the same base path
+    let files = db.get_files_by_base_path(base_path)?;
+    // Create a HashMap of the files in the database
+    let mut db_files = HashMap::new();
+    for file in files {
+        db_files.insert(file.path.clone(), file);
+    }
+    // Read directory contents and sort by path
+    let mut paths: Vec<_> = fs::read_dir(directory)?
+        .filter_map(|r| r.ok())
+        .collect();
+    paths.sort_by_key(|dir| dir.path());
+    // for each file in the directory, check if its in the database or not
+    // and report it on the console
+    for entry in paths {
+        let path = entry.path();
+        // Skip directories and non-files
+        if !path.is_file() {
+            continue;
+        }
+        let path = path.to_str();
+        // Skip files with strange paths
+        if path.is_none() {
+            continue;
+        }
+        let path = path.unwrap();
+        // Check if the file is in the database
+        if let Some(file) = db_files.remove(path) {
+            println!("[OK  ] {}", file.path);
+        } else {
+            println!("[MISS] {}", path);
+        }
+    }
     Ok(())
 }

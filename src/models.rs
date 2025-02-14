@@ -37,3 +37,14 @@ pub struct Rom {
     //#[serde(attribute)]
     pub sha1: Option<String>,
 }
+
+// Define the ScannedFile struct
+pub struct ScannedFile {
+    pub base_path: String,
+    pub path: String,
+    pub hash: String,
+    pub hash_type: String,
+    pub match_type: String,
+    pub game_name: Option<String>,
+    pub rom_name: Option<String>,
+}
