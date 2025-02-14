@@ -70,22 +70,30 @@ impl Database {
         Ok(())
     }
 
-    pub fn search_by_game_name(&self, name: &str, fuzzy: bool) -> Result<Vec<(Game, Vec<Rom>)>> {
+    pub fn search_by_game_name(&self, name: &str, fuzzy: bool) -> Result<Vec<Game>> {
         let query = "SELECT g.name, g.category, g.description, r.name, r.size, r.crc, r.md5, r.sha1
              FROM games g
              JOIN roms r ON g.name = r.game_name";
-        
-        if fuzzy {
-            self.fetch_games_and_roms(
-                &format!("{} WHERE g.name LIKE ? ORDER BY g.name, r.name", query),
-                &[format!("%{}%", name)],
-            )
+
+        let condition = if fuzzy {
+            format!("{} WHERE g.name LIKE ? ORDER BY g.name, r.name", query)
         } else {
-            self.fetch_games_and_roms(
-                &format!("{} WHERE g.name = ? ORDER BY g.name, r.name", query),
-                &[name.to_string()],
-            )
-        }
+            format!("{} WHERE g.name = ? ORDER BY g.name, r.name", query)
+        };
+
+        let param = if fuzzy { format!("%{}%", name) } else { name.to_string() };
+
+        self.fetch_games_and_roms(&condition, &[param]).map(|results| {
+            let mut games: Vec<Game> = results
+                .into_iter()
+                .map(|(mut game, roms)| {
+                    game.roms = roms;
+                    game
+                })
+                .collect();
+            games.sort_by(|a, b| a.name.cmp(&b.name));
+            games
+        })
     }
 
     pub fn search_roms(
@@ -96,12 +104,12 @@ impl Database {
         let mut conditions = Vec::new();
         let mut params = Vec::new();
 
-        for (key, value) in criteria.into_iter() {
+        for (key, value) in criteria.iter() {
             conditions.push(format!("r.{} = ?", key));
             params.push(value.to_string());
         }
 
-        for (key, value) in fuzzy_criteria.into_iter() {
+        for (key, value) in fuzzy_criteria.iter() {
             conditions.push(format!("r.{} LIKE ?", key));
             params.push(format!("%{}%", value));
         }

@@ -48,9 +48,13 @@ enum HashMethod {
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, IntoStaticStr, Display)]
 enum DisplayMethod {
+    /// Display exact matches only
     Exact,
+    /// Display partial matches only
     Partial,
+    /// Display misses only
     Miss,
+    /// Display all partial and miss matches
     NotExact,
 }
 
@@ -68,6 +72,7 @@ enum Commands {
         #[arg(short, long, value_enum, default_value = "sha1")]
         method: HashMethod,
 
+        /// Display method for files
         #[arg(long, value_enum, default_value = "not-exact")]
         file_display: DisplayMethod,
 
@@ -106,25 +111,25 @@ enum DbCommands {
 enum SearchType {
     /// Search by game name
     Game {
-        /// Game name to search for
+        /// Game name to search for (fuzzy search)
         #[arg(short, long)]
         name: String,
     },
     /// Search for ROMs by various criteria
     Rom {
-        /// ROM name to search for
+        /// ROM name to search for (fuzzy search)
         #[arg(short, long)]
         name: Option<String>,
 
-        /// ROM CRC to search for
+        /// ROM CRC to search for (exact match)
         #[arg(short, long)]
         crc: Option<String>,
 
-        /// ROM MD5 to search for
+        /// ROM MD5 to search for (exact match)
         #[arg(short, long)]
         md5: Option<String>,
 
-        /// ROM SHA1 to search for
+        /// ROM SHA1 to search for (exact match)
         #[arg(short, long)]
         sha1: Option<String>,
     },
@@ -268,7 +273,7 @@ fn scan_directory(
                         .expect("Game could not be found in database")
                         .first()
                         .expect("Game could not be found in database")
-                        .1
+                        .roms
                         .len();
                     GameStatus {
                         total_roms: num_roms,
@@ -391,8 +396,8 @@ fn main() -> Result<()> {
                     let results = db.search_by_game_name(name, true).context("Failed to search database")?;
                     if !results.is_empty() {
                         println!("Found {} matching game(s)", results.len());
-                        for (game, roms) in results {
-                            print_game_with_roms(&game, &roms);
+                        for game in results {
+                            print_game_with_roms(&game, &game.roms);
                         }
                     } else {
                         println!("No games found matching name: {}", name);
