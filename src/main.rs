@@ -211,30 +211,27 @@ struct GameStatus {
 
 fn scan_directory(
     db: &database::Database,
-    hash_type: HashMethod,
-    directory: &PathBuf,
-    first_match: bool,
-    file_display: &HashSet<DisplayMethod>,
+    args: &FullScanArgs,
     debug: bool,
-    exclude_extensions: &HashSet<String>,
 ) -> Result<()> {
     // Verify directory exists and is a directory
-    if !directory.exists() {
-        return Err(anyhow!("Directory does not exist: {}", directory.display()));
+    if !args.directory.exists() {
+        return Err(anyhow!("Directory does not exist: {}", args.directory.display()));
     }
-    if !directory.is_dir() {
-        return Err(anyhow!("Not a directory: {}", directory.display()));
+    if !args.directory.is_dir() {
+        return Err(anyhow!("Not a directory: {}", args.directory.display()));
     }
 
-    let base_path = directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
+    let base_path = args.directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
+    let hash_method: &str = args.method.into();
 
     println!("Scanning directory: {}", base_path);
-    debug_log!(debug, "Using hash type: {}", hash_type);
+    debug_log!(debug, "Using hash type: {}", hash_method);
 
     let mut game_status: BTreeMap<String, GameStatus> = BTreeMap::new();
 
     // Read directory contents and sort by path
-    let mut paths: Vec<_> = fs::read_dir(directory)?
+    let mut paths: Vec<_> = fs::read_dir(&args.directory)?
         .filter_map(|r| r.ok())
         .collect();
     paths.sort_by_key(|dir| dir.path());
@@ -282,7 +279,7 @@ fn scan_directory(
         }
 
         // Skip files with excluded extensions
-        if exclude_extensions.contains(extension) {
+        if args.exclude_extensions.contains(&extension.to_string()) {
             debug_log!(debug, "Skipping file with excluded extension: {}", filename);
             continue;
         }
@@ -295,26 +292,26 @@ fn scan_directory(
         file.read_to_end(&mut buffer)?;
 
         // Calculate hash
-        let hash = calculate_hash(&buffer, hash_type)?;
+        let hash = calculate_hash(&buffer, args.method)?;
 
-        debug_log!(debug, "Calculated {} hash: {}", hash_type, hash);
+        debug_log!(debug, "Calculated {} hash: {}", hash_method, hash);
 
         // Search database for matches
         let mut criteria = HashMap::new();
-        criteria.insert(hash_type.into(), hash.as_str());
+        criteria.insert(hash_method, hash.as_str());
 
         let results = db.search_roms(&criteria, &HashMap::new())?;
 
         if results.is_empty() {
             debug_log!(debug, "No matches found in database");
-            if file_display.contains(&DisplayMethod::Miss) {
+            if args.file_display.contains(&DisplayMethod::Miss) {
                 println!("[MISS] {} {}", hash, filename);
             }
             db.store_file(
                 base_path,
                 path,
                 &hash,
-                &hash_type.to_string(),
+                hash_method,
                 "miss",
                 None,
                 None,
@@ -346,7 +343,7 @@ fn scan_directory(
                         debug_log!(debug, "  Game: {}", game.name);
                         debug_log!(debug, "  ROM: {}", rom.name);
                         debug_log!(debug, "  Size: {}", rom.size);
-                        match hash_type {
+                        match args.method {
                             HashMethod::Crc => {
                                 if let Some(h) = &rom.crc {
                                     debug_log!(debug, "  CRC: {}", h)
@@ -369,47 +366,67 @@ fn scan_directory(
                         debug_log!(debug, "Found exact match");
                         exact_match = Some(game.name.clone());
                         game_entry.exact_matches.insert(filename.to_string());
-                        db.store_file(
-                            base_path,
-                            path,
-                            &hash,
-                            &hash_type.to_string(),
-                            "exact",
-                            Some(&game.name),
-                            Some(filename),
-                        )?;
                         break;
                     } else {
                         partial_matches.push((game.name.clone(), rom.name.clone()));
                         let partials = game_entry.partial_matches.entry(rom.name.clone()).or_default();
                         partials.insert(filename.to_string());
-                        db.store_file(
-                            base_path,
-                            path,
-                            &hash,
-                            &hash_type.to_string(),
-                            "partial",
-                            Some(&game.name),
-                            Some(filename),
-                        )?;
                     }
                 }
             }
 
             match exact_match {
                 Some(game_name) => {
-                    if file_display.contains(&DisplayMethod::Exact) {
+                    if args.file_display.contains(&DisplayMethod::Exact) {
                         println!("[OK  ] {} {} (Game: {})", hash, filename, game_name);
                     }
+                    db.store_file(
+                        base_path,
+                        path,
+                        &hash,
+                        hash_method,
+                        "exact",
+                        Some(&game_name),
+                        Some(filename),
+                    )?;
                 }
                 None => {
-                    // If we only have partial matches, print all of them
-                    for (game_name, rom_name) in partial_matches {
-                        if file_display.contains(&DisplayMethod::Partial) {
-                            println!("[WARN] {} {} (Expected: {}, Game: {})", hash, filename, rom_name, game_name);
+                    // Rename file if we have a single partial match
+                    if args.rename && partial_matches.len() == 1 {
+                        let (game_name, rom_name) = partial_matches.first().unwrap();
+                        let mut new_pathname = args.directory.clone();
+                        new_pathname.push(rom_name);
+                        debug_log!(debug, "Renaming file from: {} to: {}", path, new_pathname.display());
+                        fs::rename(path, new_pathname)?;
+                        if args.file_display.contains(&DisplayMethod::Exact) {
+                            println!("[OK  ] {} {} (Game: {})", hash, filename, game_name);
                         }
-                        if first_match {
-                            break;
+                        db.store_file(
+                            base_path,
+                            path,
+                            &hash,
+                            hash_method,
+                            "exact",
+                            Some(&game_name),
+                            Some(filename),
+                        )?;
+                    } else {
+                        let mut display_match = true;
+                        // If we only have partial matches, print all of them
+                        for (game_name, rom_name) in partial_matches {
+                            if display_match && args.file_display.contains(&DisplayMethod::Partial) {
+                                println!("[WARN] {} {} (Expected: {}, Game: {})", hash, filename, rom_name, game_name);
+                                display_match = !args.first_match;
+                            }
+                            db.store_file(
+                                base_path,
+                                path,
+                                &hash,
+                                hash_method,
+                                "partial",
+                                Some(&game_name),
+                                Some(filename),
+                            )?;
                         }
                     }
                 }
@@ -522,9 +539,7 @@ fn main() -> Result<()> {
         }
         Commands::File { file_command } => match file_command {
             FileCommands::FullScan(args) => {
-                let display : HashSet<DisplayMethod> = args.file_display.iter().cloned().collect();
-                let exclude: HashSet<String> = args.exclude_extensions.iter().cloned().collect();
-                scan_directory(&db, args.method, &args.directory, args.first_match, &display, cli.debug, &exclude).context("Failed to scan directory")?;
+                scan_directory(&db, args, cli.debug).context("Failed to scan directory")?;
             },
             FileCommands::Check { directory } => {
                 check_directory(&db, directory, cli.debug).context("Failed to check directory")?;
