@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Ok, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use crc32fast::Hasher;
 use md5::Md5;
 use sha1::{Digest, Sha1};
@@ -46,7 +46,7 @@ enum HashMethod {
     Sha1,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, IntoStaticStr, Display)]
+#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, ValueEnum, IntoStaticStr, Display)]
 enum DisplayMethod {
     /// Display exact matches only
     Exact,
@@ -54,8 +54,6 @@ enum DisplayMethod {
     Partial,
     /// Display misses only
     Miss,
-    /// Display all partial and miss matches
-    NotExact,
 }
 
 #[derive(Subcommand)]
@@ -73,35 +71,42 @@ enum Commands {
     }
 }
 
+#[derive(Args)]
+struct FullScanArgs {
+    /// Hash method to use
+    #[arg(short, long, value_enum, default_value = "sha1")]
+    method: HashMethod,
+
+    /// Display method for files
+    #[arg(long, value_enum, value_delimiter=',', default_value = "exact,partial,miss")]
+    file_display: Vec<DisplayMethod>,
+
+    /// Stop after first partial match for each file
+    #[arg(short, long)]
+    first_match: bool,
+
+    /// Directory to scan (defaults to current directory)
+    #[arg(short, long, default_value = ".")]
+    directory: PathBuf,
+
+    /// List of file extensions to exclude, comma separated
+    #[arg(short, long, value_delimiter=',', default_value = "m3u,dat")]
+    exclude_extensions: Vec<String>,
+
+    ///Rename files if unambiguous match is found
+    #[arg(short, long)]
+    rename: bool,
+}
+
 #[derive(Subcommand)]
 enum FileCommands {
     /// Scan all files in the directory for ROMs
-    FullScan {
-        /// Hash method to use
-        #[arg(short, long, value_enum, default_value = "sha1")]
-        method: HashMethod,
-
-        /// Display method for files
-        #[arg(long, value_enum, default_value = "not-exact")]
-        file_display: DisplayMethod,
-
-        /// Stop after first partial match for each file
-        #[arg(short, long)]
-        first_match: bool,
-
-        /// Directory to scan (defaults to current directory)
-        #[arg(short, long, default_value = ".")]
-        directory: PathBuf,
-
-        /// List of file extensions to exclude, comma separated
-        #[arg(short, long, value_delimiter=',', default_value = "m3u,dat")]
-        exclude_extensions: Vec<String>,
-    },
+    FullScan(FullScanArgs),
     Check {
         /// Directory to scan (defaults to current directory)
         #[arg(short, long, default_value = ".")]
         directory: PathBuf,        
-    }
+    },
 }
 
 #[derive(Subcommand)]
@@ -209,7 +214,7 @@ fn scan_directory(
     hash_type: HashMethod,
     directory: &PathBuf,
     first_match: bool,
-    file_display: DisplayMethod,
+    file_display: &HashSet<DisplayMethod>,
     debug: bool,
     exclude_extensions: &HashSet<String>,
 ) -> Result<()> {
@@ -233,6 +238,9 @@ fn scan_directory(
         .filter_map(|r| r.ok())
         .collect();
     paths.sort_by_key(|dir| dir.path());
+
+    //before we start scanning the directory, we need to clear the database of any files that have the same base path
+    db.clear_files_by_base_path(base_path)?;
 
     for entry in paths {
         let path = entry.path();
@@ -282,7 +290,7 @@ fn scan_directory(
         debug_log!(debug, "\nDebug: Processing file: {}", filename);
 
         // Read file contents
-        let mut file = fs::File::open(&path)?;
+        let mut file = fs::File::open(path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
 
@@ -299,12 +307,12 @@ fn scan_directory(
 
         if results.is_empty() {
             debug_log!(debug, "No matches found in database");
-            if file_display == DisplayMethod::Miss || file_display == DisplayMethod::NotExact {
-                println!("[MISS] {}", filename);
+            if file_display.contains(&DisplayMethod::Miss) {
+                println!("[MISS] {} {}", hash, filename);
             }
             db.store_file(
                 base_path,
-                &path,
+                path,
                 &hash,
                 &hash_type.to_string(),
                 "miss",
@@ -363,12 +371,12 @@ fn scan_directory(
                         game_entry.exact_matches.insert(filename.to_string());
                         db.store_file(
                             base_path,
-                            &path,
+                            path,
                             &hash,
                             &hash_type.to_string(),
                             "exact",
                             Some(&game.name),
-                            Some(&filename),
+                            Some(filename),
                         )?;
                         break;
                     } else {
@@ -377,12 +385,12 @@ fn scan_directory(
                         partials.insert(filename.to_string());
                         db.store_file(
                             base_path,
-                            &path,
+                            path,
                             &hash,
                             &hash_type.to_string(),
                             "partial",
                             Some(&game.name),
-                            Some(&filename),
+                            Some(filename),
                         )?;
                     }
                 }
@@ -390,15 +398,15 @@ fn scan_directory(
 
             match exact_match {
                 Some(game_name) => {
-                    if file_display == DisplayMethod::Exact {
-                        println!("[OK  ] {} ({})", filename, game_name);
+                    if file_display.contains(&DisplayMethod::Exact) {
+                        println!("[OK  ] {} {} (Game: {})", hash, filename, game_name);
                     }
                 }
                 None => {
                     // If we only have partial matches, print all of them
                     for (game_name, rom_name) in partial_matches {
-                        if file_display == DisplayMethod::Partial || file_display == DisplayMethod::NotExact {
-                            println!("[WARN] {} (Expected: {}, Game: {})", filename, rom_name, game_name);
+                        if file_display.contains(&DisplayMethod::Partial) {
+                            println!("[WARN] {} {} (Expected: {}, Game: {})", hash, filename, rom_name, game_name);
                         }
                         if first_match {
                             break;
@@ -513,19 +521,14 @@ fn main() -> Result<()> {
             },
         }
         Commands::File { file_command } => match file_command {
-            FileCommands::FullScan {
-                method,
-                file_display,
-                first_match,
-                directory,
-                exclude_extensions,
-            } => {
-                let exclude: HashSet<String> = exclude_extensions.iter().cloned().collect();
-                scan_directory(&db, *method, directory, *first_match, *file_display, cli.debug, &exclude).context("Failed to scan directory")?;
+            FileCommands::FullScan(args) => {
+                let display : HashSet<DisplayMethod> = args.file_display.iter().cloned().collect();
+                let exclude: HashSet<String> = args.exclude_extensions.iter().cloned().collect();
+                scan_directory(&db, args.method, &args.directory, args.first_match, &display, cli.debug, &exclude).context("Failed to scan directory")?;
             },
             FileCommands::Check { directory } => {
                 check_directory(&db, directory, cli.debug).context("Failed to check directory")?;
-            }
+            },
         }
     }
 
@@ -548,7 +551,7 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool) ->
     // Get all entries in the database with the same base path
     let files = db.get_files_by_base_path(base_path)?;
     // Create a HashMap of the files in the database
-    let mut db_files = HashMap::new();
+    let mut db_files = BTreeMap::new();
     for file in files {
         db_files.insert(file.path.clone(), file);
     }
@@ -573,10 +576,18 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool) ->
         let path = path.unwrap();
         // Check if the file is in the database
         if let Some(file) = db_files.remove(path) {
-            println!("[OK  ] {}", file.path);
+            println!("[OK  ] {} {}", file.hash, file.path);
         } else {
-            println!("[MISS] {}", path);
+            println!("[DIR ] {}", path);
         }
     }
+
+    // Print entries in the database that were not found in the directory
+    if !db_files.is_empty() {
+        for (_, file) in db_files {
+            println!("[DB  ] {} {}", file.hash, file.path);
+        }
+    }
+
     Ok(())
 }
