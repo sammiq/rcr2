@@ -302,20 +302,22 @@ fn scan_directory(
 
         let results = db.search_roms(&criteria, &HashMap::new())?;
 
+        let mut scanned_file = models::ScannedFile {
+            base_path: base_path.to_string(),
+            path: path.to_string(),
+            hash: hash.clone(),
+            hash_type: hash_method.to_string(),
+            match_type: "miss".to_string(),
+            game_name: None,
+            rom_name: None,
+        };
+
         if results.is_empty() {
             debug_log!(debug, "No matches found in database");
             if args.file_display.contains(&DisplayMethod::Miss) {
                 println!("[MISS] {} {}", hash, filename);
             }
-            db.store_file(
-                base_path,
-                path,
-                &hash,
-                hash_method,
-                "miss",
-                None,
-                None,
-            )?;
+            db.store_file(&scanned_file)?;
         } else {
             debug_log!(debug, "Found {} matching entries in database", results.len());
 
@@ -380,15 +382,11 @@ fn scan_directory(
                     if args.file_display.contains(&DisplayMethod::Exact) {
                         println!("[OK  ] {} {} (Game: {})", hash, filename, game_name);
                     }
-                    db.store_file(
-                        base_path,
-                        path,
-                        &hash,
-                        hash_method,
-                        "exact",
-                        Some(&game_name),
-                        Some(filename),
-                    )?;
+                    
+                    scanned_file.match_type = "exact".to_string();
+                    scanned_file.game_name = Some(game_name);
+                    scanned_file.rom_name = Some(filename.to_string());
+                    db.store_file(&scanned_file)?;
                 }
                 None => {
                     // Rename file if we have a single partial match
@@ -399,17 +397,13 @@ fn scan_directory(
                         debug_log!(debug, "Renaming file from: {} to: {}", path, new_pathname.display());
                         fs::rename(path, new_pathname)?;
                         if args.file_display.contains(&DisplayMethod::Exact) {
-                            println!("[OK  ] {} {} (Game: {})", hash, filename, game_name);
+                            println!("[OK  ] {} {} (Game: {})", hash, rom_name, game_name);
                         }
-                        db.store_file(
-                            base_path,
-                            path,
-                            &hash,
-                            hash_method,
-                            "exact",
-                            Some(&game_name),
-                            Some(filename),
-                        )?;
+                        
+                        scanned_file.match_type = "exact".to_string();
+                        scanned_file.game_name = Some(game_name.to_owned());
+                        scanned_file.rom_name = Some(rom_name.to_owned());
+                        db.store_file(&scanned_file)?;
                     } else {
                         let mut display_match = true;
                         // If we only have partial matches, print all of them
@@ -418,15 +412,11 @@ fn scan_directory(
                                 println!("[WARN] {} {} (Expected: {}, Game: {})", hash, filename, rom_name, game_name);
                                 display_match = !args.first_match;
                             }
-                            db.store_file(
-                                base_path,
-                                path,
-                                &hash,
-                                hash_method,
-                                "partial",
-                                Some(&game_name),
-                                Some(filename),
-                            )?;
+                            
+                            scanned_file.match_type = "partial".to_string();
+                            scanned_file.game_name = Some(game_name);
+                            scanned_file.rom_name = Some(rom_name);
+                            db.store_file(&scanned_file)?;
                         }
                     }
                 }

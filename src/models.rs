@@ -39,6 +39,7 @@ pub struct Rom {
 }
 
 // Define the ScannedFile struct
+#[derive(Debug, Clone)]
 pub struct ScannedFile {
     pub base_path: String,
     pub path: String,

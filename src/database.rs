@@ -57,20 +57,19 @@ impl Database {
         Ok(())
     }
 
-    pub fn store_file(
-        &self,
-        base_path: &str,
-        path: &str,
-        hash: &str,
-        hash_type: &str,
-        match_type: &str,
-        game_name: Option<&str>,
-        rom_name: Option<&str>,
-    ) -> Result<()> {
+    pub fn store_file(&self, file: &ScannedFile) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO scanned_files (base_path, path, hash, hash_type, match_type, game_name, rom_name)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![base_path, path, hash, hash_type, match_type, game_name, rom_name],
+            params![
+                file.base_path,
+                file.path,
+                file.hash,
+                file.hash_type,
+                file.match_type,
+                file.game_name,
+                file.rom_name
+            ],
         )?;
         Ok(())
     }
