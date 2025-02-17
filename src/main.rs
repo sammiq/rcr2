@@ -246,7 +246,7 @@ fn should_skip_file(path: &Path, exclude_extensions: &Vec<String>) -> bool {
     exclude_extensions.contains(&extension.to_string())
 }
 
-fn read_and_hash_file(path: &str, method: HashMethod, debug: bool) -> Result<String> {
+fn read_and_hash_file(path: &Path, method: HashMethod, debug: bool) -> Result<String> {
     // Read file contents
     let mut file = fs::File::open(path)?;
     let mut buffer = Vec::new();
@@ -254,7 +254,7 @@ fn read_and_hash_file(path: &str, method: HashMethod, debug: bool) -> Result<Str
 
     // Calculate hash
     let hash = calculate_hash(&buffer, method)?;
-    debug_log!(debug, "Calculated {} hash: {}", method, hash);
+    debug_log!(debug, "Calculated {} hash: {} for file: {}", method, hash, path.display());
 
     Ok(hash)
 }
@@ -385,45 +385,20 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
         if should_skip_file(&path, exclude_extensions) {
             continue;
         }
-        let filename = path.file_name().unwrap().to_str().unwrap();
-        let path = path.to_str().unwrap();
 
+        let filename = path.file_name().unwrap().to_str().unwrap();
         debug_log!(debug, "\nDebug: Processing file: {}", filename);
 
-        let hash = read_and_hash_file(path, args.method, debug)?;
-
-        // Search database for matches
-        let mut criteria = HashMap::new();
-        criteria.insert(hash_method, hash.as_str());
-
-        let results = db.search_roms(&criteria, &HashMap::new())?;
-
-        let mut scanned_file = models::ScannedFile {
-            base_path: base_path.to_string(),
-            path: path.to_string(),
-            hash: hash.clone(),
-            hash_type: hash_method.to_string(),
-            match_type: "miss".to_string(),
-            game_name: None,
-            rom_name: None,
-        };
-
-        if results.is_empty() {
-            debug_log!(debug, "No matches found in database");
-            if args.file_display.contains(&DisplayMethod::Miss) {
-                println!("[MISS] {} {}", hash, filename);
-            }
-            db.store_file(&scanned_file)?;
-        } else {
-            debug_log!(debug, "Found {} matching entries in database", results.len());
-
-            let (exact_match, partial_matches) = check_matches(&db, args, debug, filename, &results, &mut game_status)?;
-
-            handle_rom_matches(&db, args, debug, filename, &mut scanned_file, exact_match, partial_matches)?;
-        }
+        let hash = read_and_hash_file(&path, args.method, debug)?;
+        match_roms(db, args, debug, base_path, &path, &hash, &mut game_status)?;
     }
 
-    // Print summary
+    print_game_status(&game_status);
+
+    Ok(())
+}
+
+fn print_game_status(game_status: &BTreeMap<String, GameStatus>) {
     println!("\nGame Summary:");
     for (game_name, status) in game_status.iter() {
         let exact_count = status.exact_matches.len();
@@ -436,17 +411,56 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
                 println!("[WARN] {} ({} exact matches, {} partial matches)", game_name, exact_count, partial_count);
                 for (expected, partial_match) in status.partial_matches.iter() {
                     for filename in partial_match {
-                        println!("\t[WARN] {} (Expected: {})", filename, expected);
+                        println!("[WARN]   {} (Expected: {})", filename, expected);
                     }
                 }
             }
         }
     }
-
-    Ok(())
 }
 
-fn check_matches(
+fn match_roms(
+    db: &database::Database,
+    args: &ScanArgs,
+    debug: bool,
+    base_path: &str,
+    path: &Path,
+    hash: &str,
+    game_status: &mut BTreeMap<String, GameStatus>,
+) -> Result<(), anyhow::Error> {
+    let filename = path.file_name().unwrap().to_str().unwrap();
+    let path = path.to_str().unwrap();
+    let hash_method: &str = args.method.into();
+
+    let mut criteria = HashMap::new();
+    criteria.insert(hash_method, hash);
+
+    let results = db.search_roms(&criteria, &HashMap::new())?;
+    let mut scanned_file = models::ScannedFile {
+        base_path: base_path.to_string(),
+        path: path.to_string(),
+        hash: hash.to_string(),
+        hash_type: args.method.to_string(),
+        match_type: "miss".to_string(),
+        game_name: None,
+        rom_name: None,
+    };
+    Ok(if results.is_empty() {
+        debug_log!(debug, "No matches found in database");
+        if args.file_display.contains(&DisplayMethod::Miss) {
+            println!("[MISS] {} {}", hash, filename);
+        }
+        db.store_file(&scanned_file)?;
+    } else {
+        debug_log!(debug, "Found {} matching entries in database", results.len());
+
+        let (exact_match, partial_matches) = check_rom_matches(&db, args, debug, filename, &results, game_status)?;
+
+        handle_rom_matches(&db, args, debug, filename, &mut scanned_file, exact_match, partial_matches)?;
+    })
+}
+
+fn check_rom_matches(
     db: &database::Database,
     args: &ScanArgs,
     debug: bool,
@@ -458,20 +472,7 @@ fn check_matches(
     let mut partial_matches = Vec::new();
 
     for (game, roms) in results {
-        let game_entry = game_status.entry(game.name.clone()).or_insert_with(|| {
-            let num_roms = db
-                .search_by_game_name(&game.name, false)
-                .expect("Game could not be found in database")
-                .first()
-                .expect("Game could not be found in database")
-                .roms
-                .len();
-            GameStatus {
-                total_roms: num_roms,
-                exact_matches: HashSet::new(),
-                partial_matches: HashMap::new(),
-            }
-        });
+        let game_entry = game_entry(db, game_status, &game.name);
         for rom in roms {
             if debug {
                 debug_log!(debug, "Comparing with database entry:");
@@ -510,6 +511,24 @@ fn check_matches(
         }
     }
     Ok((exact_match, partial_matches))
+}
+
+fn game_entry<'a>(db: &database::Database, game_status: &'a mut BTreeMap<String, GameStatus>, game_name: &str) -> &'a mut GameStatus {
+    let game_entry = game_status.entry(game_name.to_string()).or_insert_with(|| {
+        let num_roms = db
+            .search_by_game_name(&game_name, false)
+            .expect("Game could not be found in database")
+            .first()
+            .expect("Game could not be found in database")
+            .roms
+            .len();
+        GameStatus {
+            total_roms: num_roms,
+            exact_matches: HashSet::new(),
+            partial_matches: HashMap::new(),
+        }
+    });
+    game_entry
 }
 
 fn handle_rom_matches(
@@ -590,11 +609,13 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
         db_files.insert(file.path.clone(), file);
     }
 
+    let mut game_status: BTreeMap<String, GameStatus> = BTreeMap::new();
+    let mut hash_to_file: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+    
     // Read directory contents and sort by path
     let mut paths: Vec<_> = fs::read_dir(&args.directory)?.filter_map(|r| r.ok()).collect();
     paths.sort_by_key(|dir| dir.path());
-    // for each file in the directory, check if its in the database or not
-    // and report it on the console
+
     for entry in paths {
         let path = entry.path();
         // Skip directories and non-files
@@ -604,17 +625,52 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
         }
 
         let filename = path.file_name().unwrap().to_str().unwrap();
-        let path = path.to_str().unwrap();
+        let path_str = path.to_str().unwrap();
 
-        debug_log!(debug, "\nDebug: Processing file: {}", filename);
-
-        if let Some(_scanned_file) = db_files.remove(path) {
-            //skip this file if it is already in the database
+        if let Some(scanned_file) = db_files.remove(path_str) {
+            //just treat the database as correct, and add it to the game status
+            if scanned_file.game_name.is_some() {
+                let game_status = game_entry(db, &mut game_status, &scanned_file.game_name.unwrap());
+                if scanned_file.match_type == "exact" {
+                    game_status.exact_matches.insert(scanned_file.rom_name.unwrap());
+                } else {
+                    let partials = game_status.partial_matches.entry(scanned_file.rom_name.unwrap()).or_default();
+                    partials.insert(filename.to_string());
+                }
+            }
         } else {
-            //doesn't seem to be in the database, so check the hash
-            let hash = read_and_hash_file(path, args.method, debug)?;
+            debug_log!(debug, "\nDebug: Processing file: {}", filename);
+
+            //doesn't seem to be in the database, so check the hash and add it to the database
+            let hash = read_and_hash_file(&path, args.method, debug)?;
+
+            //store the file and the hash in a hash table so that we can find renamed files
+            hash_to_file.entry(hash.clone()).or_default().insert(filename.to_string());
+
+            match_roms(db, args, debug, base_path, &path, &hash, &mut game_status)?;
         }
     }
+
+    debug_log!(debug, "Hash to file: {:?}", hash_to_file);
+    
+    //if there are missing file then we should remove them from the database, but we need to check if they were renamed first
+    for db_file in db_files.values() {
+        debug_log!(debug, "Checking missing file: {} with hash: {}", db_file.path, db_file.hash);
+        if let Some(filenames) = hash_to_file.get(&db_file.hash) {
+            if filenames.len() == 1 {
+                //we have a single file with the same hash, so we can assume it was renamed
+                debug_log!(debug, "deleting database entry: {}", db_file.path);
+                db.delete_file(&db_file.path)?;
+            }
+
+            println!("[MOVE] {} {}", db_file.hash, db_file.path);
+        } else {
+            println!("[GONE] {} {}", db_file.hash, db_file.path);
+        }
+        
+    }
+
+    print_game_status(&game_status);
 
     Ok(())
 }
@@ -651,11 +707,10 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
         if should_skip_file(&path, exclude_extensions) {
             continue;
         }
+        let path_str = path.to_str().unwrap();
 
-        let path = path.to_str().unwrap();
-
-        if let Some(scanned_file) = db_files.remove(path) {
-            let hash = read_and_hash_file(path, HashMethod::from_str(&scanned_file.hash_type, true).unwrap(), debug)?;
+        if let Some(scanned_file) = db_files.remove(path_str) {
+            let hash = read_and_hash_file(&path, HashMethod::from_str(&scanned_file.hash_type, true).unwrap(), debug)?;
             if hash != scanned_file.hash {
                 println!("[ERR ] {} {} (Expected: {})", hash, scanned_file.path, scanned_file.hash);
             } else {
@@ -678,15 +733,13 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
                 }
             }
         } else {
-            println!("[NEW ] {}", path);
+            println!("[NEW ] {}", path_str);
         }
     }
 
     // Print entries in the database that were not found in the directory
-    if !db_files.is_empty() {
-        for (_, file) in db_files {
-            println!("[GONE] {} {}", file.hash, file.path);
-        }
+    for db_file in db_files.values() {
+        println!("[GONE] {} {}", db_file.hash, db_file.path);
     }
 
     Ok(())

@@ -246,4 +246,9 @@ impl Database {
         )?;
         Ok(())
     }
+
+    pub fn delete_file(&self, path: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM scanned_files WHERE path = ?1", [path])?;
+        Ok(())
+    }
 }
