@@ -240,10 +240,8 @@ impl Database {
     }
 
     pub fn clear_files_by_base_path(&self, base_path: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM scanned_files WHERE base_path = ?1",
-            [base_path],
-        )?;
+        self.conn
+            .execute("DELETE FROM scanned_files WHERE base_path = ?1", [base_path])?;
         Ok(())
     }
 

@@ -513,7 +513,11 @@ fn check_rom_matches(
     Ok((exact_match, partial_matches))
 }
 
-fn game_entry<'a>(db: &database::Database, game_status: &'a mut BTreeMap<String, GameStatus>, game_name: &str) -> &'a mut GameStatus {
+fn game_entry<'a>(
+    db: &database::Database,
+    game_status: &'a mut BTreeMap<String, GameStatus>,
+    game_name: &str,
+) -> &'a mut GameStatus {
     let game_entry = game_status.entry(game_name.to_string()).or_insert_with(|| {
         let num_roms = db
             .search_by_game_name(&game_name, false)
@@ -611,7 +615,7 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
 
     let mut game_status: BTreeMap<String, GameStatus> = BTreeMap::new();
     let mut hash_to_file: BTreeMap<String, HashSet<String>> = BTreeMap::new();
-    
+
     // Read directory contents and sort by path
     let mut paths: Vec<_> = fs::read_dir(&args.directory)?.filter_map(|r| r.ok()).collect();
     paths.sort_by_key(|dir| dir.path());
@@ -652,7 +656,7 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
     }
 
     debug_log!(debug, "Hash to file: {:?}", hash_to_file);
-    
+
     //if there are missing file then we should remove them from the database, but we need to check if they were renamed first
     for db_file in db_files.values() {
         debug_log!(debug, "Checking missing file: {} with hash: {}", db_file.path, db_file.hash);
@@ -667,7 +671,6 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
         } else {
             println!("[GONE] {} {}", db_file.hash, db_file.path);
         }
-        
     }
 
     print_game_status(&game_status);
