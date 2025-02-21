@@ -112,7 +112,7 @@ impl Database {
             format!("{} WHERE g.name = ? ORDER BY g.name, r.name", query)
         };
 
-        let param = if fuzzy { format!("%{}%", name) } else { name.to_string() };
+        let param = if fuzzy { format!("%{}%", name) } else { name.to_owned() };
 
         self.fetch_games_and_roms(&condition, &[param]).map(|results| {
             let mut games: Vec<Game> = results
@@ -133,11 +133,11 @@ impl Database {
         fuzzy_criteria: &HashMap<&str, &str>,
     ) -> Result<Vec<(Game, Vec<Rom>)>> {
         let mut conditions = Vec::new();
-        let mut params = Vec::new();
+        let mut params: Vec<String> = Vec::new();
 
         for (key, value) in criteria.iter() {
             conditions.push(format!("r.{} = ?", key));
-            params.push(value.to_string());
+            params.push(String::from(*value));
         }
 
         for (key, value) in fuzzy_criteria.iter() {
@@ -190,29 +190,6 @@ impl Database {
 
         let results: Vec<_> = games_map.into_values().collect();
         Ok(results)
-    }
-
-    pub fn get_scanned_file(&self, path: &str) -> Result<Option<ScannedFile>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT base_path, path, hash, hash_type, match_type, game_name, rom_name
-             FROM scanned_files
-             WHERE path = ?1",
-        )?;
-        let mut rows = stmt.query(params![path])?;
-
-        if let Some(row) = rows.next()? {
-            Ok(Some(ScannedFile {
-                base_path: row.get(0)?,
-                path: row.get(1)?,
-                hash: row.get(2)?,
-                hash_type: row.get(3)?,
-                match_type: row.get(4)?,
-                game_name: row.get(5)?,
-                rom_name: row.get(6)?,
-            }))
-        } else {
-            Ok(None)
-        }
     }
 
     pub fn get_files_by_base_path(&self, base_path: &str) -> Result<Vec<ScannedFile>> {
