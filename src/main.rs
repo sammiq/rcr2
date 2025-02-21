@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use strum::{Display, IntoStaticStr};
 
 mod database;
+mod db_commands;
 mod models;
 mod xml_parser;
 
@@ -61,7 +62,7 @@ enum Commands {
     /// Perform a database operation
     Database {
         #[command(subcommand)]
-        db_command: DbCommands,
+        db_command: db_commands::DbCommands,
     },
     /// Perform a file operation
     File {
@@ -109,76 +110,6 @@ enum FileCommands {
         #[arg(short, long, default_value = ".")]
         directory: PathBuf,
     },
-}
-
-#[derive(Subcommand)]
-enum DbCommands {
-    /// Initialize the database
-    Initialize {
-        /// Path to the XML file to import
-        #[arg(short, long)]
-        input: PathBuf,
-    },
-    /// Import data into the database
-    Import {
-        /// Path to the XML file to import
-        #[arg(short, long)]
-        input: PathBuf,
-    },
-    /// Search the database
-    Search {
-        #[command(subcommand)]
-        search_type: SearchType,
-    },
-}
-
-#[derive(Subcommand)]
-enum SearchType {
-    /// Search by game name
-    Game {
-        /// Game name to search for (fuzzy search)
-        #[arg(short, long)]
-        name: String,
-    },
-    /// Search for ROMs by various criteria
-    Rom {
-        /// ROM name to search for (fuzzy search)
-        #[arg(short, long)]
-        name: Option<String>,
-
-        /// ROM CRC to search for (exact match)
-        #[arg(short, long)]
-        crc: Option<String>,
-
-        /// ROM MD5 to search for (exact match)
-        #[arg(short, long)]
-        md5: Option<String>,
-
-        /// ROM SHA1 to search for (exact match)
-        #[arg(short, long)]
-        sha1: Option<String>,
-    },
-}
-
-fn print_game_with_roms(game: &models::Game, roms: &[models::Rom]) {
-    println!("\nGame:");
-    println!("Name: {}", game.name);
-    println!("Category: {}", game.category);
-    //    println!("Description: {}", game.description);
-    println!("ROMs:");
-    for rom in roms {
-        println!("\n\tName: {}", rom.name);
-        println!("\tSize: {}", rom.size);
-        if let Some(crc) = &rom.crc {
-            println!("\tCRC: {}", crc);
-        }
-        if let Some(md5) = &rom.md5 {
-            println!("\tMD5: {}", md5);
-        }
-        if let Some(sha1) = &rom.sha1 {
-            println!("\tSHA1: {}", sha1);
-        }
-    }
 }
 
 fn calculate_hash(data: &[u8], hash_type: HashMethod) -> Result<String> {
@@ -260,77 +191,7 @@ fn main() -> Result<()> {
     let mut db = database::Database::new(&cli.database).context("Failed to connect to database")?;
 
     match &cli.command {
-        Commands::Database { db_command } => match db_command {
-            DbCommands::Initialize { input } => {
-                db.initialize().context("Failed to initialize database")?;
-
-                let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
-
-                db.merge_data(data).context("Failed to merge data into database")?;
-
-                println!("Initialize completed successfully");
-            }
-            DbCommands::Import { input } => {
-                let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
-
-                db.merge_data(data).context("Failed to merge data into database")?;
-
-                println!("Import completed successfully");
-            }
-            DbCommands::Search { search_type } => match search_type {
-                SearchType::Game { name } => {
-                    let results = db.search_by_game_name(name, true).context("Failed to search database")?;
-                    if results.is_empty() {
-                        println!("No games found matching name: {}", name);
-                    } else {
-                        println!("Found {} matching game(s)", results.len());
-                        for game in results {
-                            print_game_with_roms(&game, &game.roms);
-                        }
-                    }
-                }
-                SearchType::Rom { name, crc, md5, sha1 } => {
-                    let mut criteria = HashMap::new();
-                    let mut fuzzy_criteria = HashMap::new();
-                    //inserting the name, crc, md5, and sha1 values into the criteria HashMap if they are not None
-                    if let Some(name) = name {
-                        //always fuzzy search by name
-                        fuzzy_criteria.insert("name", name.as_str());
-                    }
-                    if let Some(crc) = crc {
-                        criteria.insert("crc", crc.as_str());
-                    }
-                    if let Some(md5) = md5 {
-                        criteria.insert("md5", md5.as_str());
-                    }
-                    if let Some(sha1) = sha1 {
-                        criteria.insert("sha1", sha1.as_str());
-                    }
-
-                    if criteria.is_empty() && fuzzy_criteria.is_empty() {
-                        return Err(anyhow!("Please provide at least one search criterion (name, crc, md5, or sha1)"));
-                    }
-
-                    let results = db
-                        .search_roms(&criteria, &fuzzy_criteria)
-                        .context("Failed to search database")?;
-                    if results.is_empty() {
-                        let args = criteria
-                            .iter()
-                            .chain(fuzzy_criteria.iter())
-                            .map(|(k, v)| format!("{k}: {v}"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        println!("No ROMs found matching criteria: {}", args);
-                    } else {
-                        println!("Found {} matching game(s)", results.len());
-                        for (game, roms) in results {
-                            print_game_with_roms(&game, &roms);
-                        }
-                    }
-                }
-            },
-        },
+        Commands::Database { db_command } => db_commands::handle_command(&mut db, db_command)?,
         Commands::File {
             file_command,
             exclude_extensions,
@@ -728,7 +589,7 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
         let path_str = path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
 
         if let Some(scanned_file) = db_files.remove(path_str) {
-            let hash_method = HashMethod::from_str(&scanned_file.hash_type, true).map_err(|e| anyhow!(e))?;
+            let hash_method = HashMethod::from_str(&scanned_file.hash_type, false).expect("should always be a valid hash method");
             let hash = read_and_hash_file(&path, hash_method, debug)?;
             if hash == scanned_file.hash {
                 match scanned_file.match_type.as_str() {
