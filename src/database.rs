@@ -135,12 +135,12 @@ impl Database {
         let mut conditions = Vec::new();
         let mut params: Vec<String> = Vec::new();
 
-        for (key, value) in criteria.iter() {
+        for (key, value) in criteria {
             conditions.push(format!("r.{} = ?", key));
             params.push(String::from(*value));
         }
 
-        for (key, value) in fuzzy_criteria.iter() {
+        for (key, value) in fuzzy_criteria {
             conditions.push(format!("r.{} LIKE ?", key));
             params.push(format!("%{}%", value));
         }

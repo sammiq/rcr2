@@ -22,3 +22,5 @@ str_to_string = "warn"
 to_string_in_format_args = "warn"
 unnecessary_to_owned = "warn"
 unwrap_used = "warn"
+
+uninlined_format_args = "allow"

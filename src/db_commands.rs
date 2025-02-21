@@ -133,7 +133,7 @@ pub fn handle_command(db: &mut database::Database, command: &DbCommands) -> Resu
                 if results.is_empty() {
                     let args = criteria
                         .iter()
-                        .chain(fuzzy_criteria.iter())
+                        .chain(&fuzzy_criteria)
                         .map(|(k, v)| format!("{k}: {v}"))
                         .collect::<Vec<_>>()
                         .join(", ");

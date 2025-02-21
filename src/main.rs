@@ -25,7 +25,7 @@ macro_rules! debug_log {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Path to the SQLite database
+    /// Path to the database
     #[arg(short, long, default_value = ".rcr.db")]
     database: PathBuf,
 
@@ -255,7 +255,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
 
 fn print_game_status(game_status: &BTreeMap<String, GameStatus>) {
     println!("\nGame Summary:");
-    for (game_name, status) in game_status.iter() {
+    for (game_name, status) in game_status {
         let exact_count = status.exact_matches.len();
         let partial_count = status.partial_matches.len();
 
@@ -264,7 +264,7 @@ fn print_game_status(game_status: &BTreeMap<String, GameStatus>) {
                 println!("[OK  ] {}", game_name);
             } else {
                 println!("[WARN] {} ({} exact matches, {} partial matches)", game_name, exact_count, partial_count);
-                for (expected, partial_match) in status.partial_matches.iter() {
+                for (expected, partial_match) in &status.partial_matches {
                     for filename in partial_match {
                         println!("[WARN]   {} (Expected: {})", filename, expected);
                     }
