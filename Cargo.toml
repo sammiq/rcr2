@@ -15,6 +15,7 @@ sha1 = "0.10.6"
 strum = { version = "0.27", features = ["derive"] }
 
 [lints.clippy]
+# pedantic
 redundant_closure_for_method_calls = "warn"
 if_not_else = "warn"
 needless_borrow = "warn"
@@ -22,5 +23,3 @@ str_to_string = "warn"
 to_string_in_format_args = "warn"
 unnecessary_to_owned = "warn"
 unwrap_used = "warn"
-
-uninlined_format_args = "allow"
