@@ -1,20 +1,20 @@
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DataFile {
     pub header: Header,
     #[serde(rename = "game")]
     pub games: Vec<Game>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Header {
     pub name: String,
     pub description: String,
     pub version: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Game {
     //#[serde(attribute)]
     pub name: String,
@@ -24,7 +24,7 @@ pub struct Game {
     pub roms: Vec<Rom>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Rom {
     //#[serde(attribute)]
     pub name: String,
@@ -39,7 +39,7 @@ pub struct Rom {
 }
 
 // Define the ScannedFile struct
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct ScannedFile {
     pub base_path: String,
     pub path: String,
