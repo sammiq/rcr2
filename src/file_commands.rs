@@ -24,7 +24,7 @@ macro_rules! debug_log {
 pub enum FileCommands {
     /// Scan all files in the directory and store the results in the database
     Scan(ScanArgs),
-    //Update the database with the files in the directory, skipping files that are already in the database
+    /// Update files in the database from the directory, checking for new, renamed and removed files
     Update(ScanArgs),
     /// Check all files in the directory against the database
     Check {
@@ -514,7 +514,7 @@ fn handle_rom_matches(
     scanned_file: &mut models::ScannedFile,
     matches: &Matches,
 ) -> Result<()> {
-    if matches.exact.len() > 0 {
+    if !matches.exact.is_empty() {
         // If we have exact matches, print all of them and ignore partial matches
         for (game_name, rom_name) in &matches.exact {
             if args.file_display.contains(&DisplayMethod::Exact) {
@@ -527,44 +527,42 @@ fn handle_rom_matches(
                 return Ok(());
             }
         }
-    } else {
-        if matches.partial.len() > 1 {
+    } else if matches.partial.len() > 1 {
+        if args.file_display.contains(&DisplayMethod::Partial) {
+            println!("[NAME] {} {}. (Multiple matches)", scanned_file.hash, filename);
+        }
+        // If we only have partial matches, print all of them
+        for (game_name, rom_name) in &matches.partial {
             if args.file_display.contains(&DisplayMethod::Partial) {
-                println!("[NAME] {} {}. (Multiple matches)", scanned_file.hash, filename);
+                println!("[NAME]   {} {} (Game: {})", scanned_file.hash, rom_name, game_name);
             }
-            // If we only have partial matches, print all of them
-            for (game_name, rom_name) in &matches.partial {
-                if args.file_display.contains(&DisplayMethod::Partial) {
-                    println!("[NAME]   {} {} (Game: {})", scanned_file.hash, rom_name, game_name);
-                }
 
-                update_scanned(scanned_file, "partial", game_name, rom_name);
-                db.store_file(scanned_file)?;
+            update_scanned(scanned_file, "partial", game_name, rom_name);
+            db.store_file(scanned_file)?;
+        }
+    } else if matches.partial.len() == 1 {
+        let (game_name, rom_name) = matches
+            .partial
+            .first()
+            .ok_or_else(|| anyhow!("should have a partial match"))?;
+        if args.rename {
+            let mut new_pathname = args.directory.clone();
+            new_pathname.push(rom_name);
+            debug_log!(debug, "Renaming file from: {} to: {}", scanned_file.path, new_pathname.display());
+            fs::rename(&scanned_file.path, new_pathname)?;
+            if args.file_display.contains(&DisplayMethod::Exact) {
+                println!("[OK  ] {} {} (Game: {})", scanned_file.hash, rom_name, game_name);
             }
-        } else if matches.partial.len() == 1 {
-            let (game_name, rom_name) = matches
-                .partial
-                .first()
-                .ok_or_else(|| anyhow!("should have a partial match"))?;
-            if args.rename {
-                let mut new_pathname = args.directory.clone();
-                new_pathname.push(rom_name);
-                debug_log!(debug, "Renaming file from: {} to: {}", scanned_file.path, new_pathname.display());
-                fs::rename(&scanned_file.path, new_pathname)?;
-                if args.file_display.contains(&DisplayMethod::Exact) {
-                    println!("[OK  ] {} {} (Game: {})", scanned_file.hash, rom_name, game_name);
-                }
 
-                update_scanned(scanned_file, "exact", game_name, rom_name);
-                db.store_file(scanned_file)?;
-            } else {
-                if args.file_display.contains(&DisplayMethod::Partial) {
-                    println!("[NAME]   {} {} (Expected: {} Game: {})", scanned_file.hash, filename, rom_name, game_name);
-                }
-
-                update_scanned(scanned_file, "partial", game_name, rom_name);
-                db.store_file(scanned_file)?;
+            update_scanned(scanned_file, "exact", game_name, rom_name);
+            db.store_file(scanned_file)?;
+        } else {
+            if args.file_display.contains(&DisplayMethod::Partial) {
+                println!("[NAME]   {} {} (Expected: {} Game: {})", scanned_file.hash, filename, rom_name, game_name);
             }
+
+            update_scanned(scanned_file, "partial", game_name, rom_name);
+            db.store_file(scanned_file)?;
         }
     }
     Ok(())
@@ -588,7 +586,13 @@ fn print_found_games(found_games: &BTreeMap<String, GameStatus>) {
             if exact_count == status.roms.len() {
                 println!("[FULL] {}", game_name);
             } else {
-                println!("[PART] {} ({} exact matches, {} partial matches. {} missing)", game_name, exact_count, partial_count, status.roms.len() - (exact_count + partial_count));
+                println!(
+                    "[PART] {} ({} exact matches, {} partial matches. {} missing)",
+                    game_name,
+                    exact_count,
+                    partial_count,
+                    status.roms.len() - (exact_count + partial_count)
+                );
                 for (expected, partial_match) in &status.partial_matches {
                     for filename in partial_match {
                         println!("[NAME]   {} (Expected: {})", filename, expected);
