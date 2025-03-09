@@ -288,6 +288,8 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
         }
         let path_str = path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
 
+        //TODO check if this is a zip file and treat it accorgingly
+        
         if let Some(scanned_file) = db_files.remove(path_str) {
             let hash_method = HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
             let hash = open_and_hash_file(&path, hash_method, debug)?;
