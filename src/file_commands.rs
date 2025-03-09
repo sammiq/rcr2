@@ -192,6 +192,26 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
             continue;
         }
 
+        debug_log!(debug, "\nDebug: Processing file: {}", path.display());
+
+        //check if this is a zip file and treat it accorgingly
+        if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
+            if extension.eq_ignore_ascii_case("zip") {
+                update_zip_contents(
+                    db,
+                    args,
+                    debug,
+                    base_path,
+                    &path,
+                    exclude_extensions,
+                    &mut db_files,
+                    &mut hash_to_file,
+                    &mut found_games,
+                )?;
+                continue;
+            }
+        }
+
         let filename = path
             .file_name()
             .ok_or_else(|| anyhow!("should have a file name"))?
@@ -212,13 +232,11 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
                 }
             }
         } else {
-            debug_log!(debug, "\nDebug: Processing file: {}", filename);
-
             //doesn't seem to be in the database, so check the hash and add it to the database
             let hash = open_and_hash_file(&path, args.method, debug)?;
 
             //store the file and the hash in a hash table so that we can find renamed files
-            hash_to_file.entry(hash.clone()).or_default().insert(filename.to_owned());
+            hash_to_file.entry(hash.clone()).or_default().insert(path_str.to_owned());
 
             match_roms(db, args, debug, base_path, &path, &hash, &mut found_games)?;
         }
@@ -282,7 +300,7 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
         let path_str = path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
 
         if let Some(scanned_file) = db_files.remove(path_str) {
-            let hash_method = HashMethod::from_str(&scanned_file.hash_type, false).expect("should always be a valid hash method");
+            let hash_method = HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
             let hash = open_and_hash_file(&path, hash_method, debug)?;
             if hash == scanned_file.hash {
                 match scanned_file.match_type.as_str() {
@@ -645,11 +663,74 @@ fn scan_zip_contents(
             }
 
             debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
-            let hash = read_and_hash(&mut file, args.method)?;
-
             let file_path = zip_path.to_path_buf().join(inner_path);
 
+            let hash = read_and_hash(&mut file, args.method)?;
             match_roms(db, args, debug, base_path, &file_path, &hash, found_games)?
+        }
+    }
+    Ok(())
+}
+
+fn update_zip_contents(
+    db: &database::Database,
+    args: &ScanArgs,
+    debug: bool,
+    base_path: &str,
+    zip_path: &Path,
+    exclude_extensions: &[String],
+    db_files: &mut BTreeMap<String, models::ScannedFile>,
+    hash_to_file: &mut BTreeMap<String, HashSet<String>>,
+    found_games: &mut BTreeMap<String, GameStatus>,
+) -> Result<()> {
+    let file = fs::File::open(zip_path)?;
+    let mut archive = ZipArchive::new(file)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        if file.is_dir() {
+            continue;
+        }
+
+        if let Some(inner_path) = file.enclosed_name() {
+            if let Some(extension) = inner_path.extension().and_then(|n| n.to_str()) {
+                if exclude_extensions.contains(&extension.to_owned()) {
+                    continue;
+                }
+            }
+
+            let file_path = inner_path.clone();
+            let filename = file_path
+                .file_name()
+                .ok_or_else(|| anyhow!("should have a file name"))?
+                .to_str()
+                .ok_or_else(|| anyhow!("should have a unicode file name"))?;
+
+            debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
+            let file_path = zip_path.to_path_buf().join(inner_path);
+            let path_str = file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+
+            if let Some(scanned_file) = db_files.remove(path_str) {
+                //just treat the database as correct, and add it to the game status
+                if let Some(game_name) = scanned_file.game_name {
+                    let game_status = get_game_status(db, found_games, &game_name);
+                    let rom_name = scanned_file.rom_name.ok_or_else(|| anyhow!("should have a rom name"))?;
+                    if scanned_file.match_type == "exact" {
+                        game_status.exact_matches.insert(rom_name);
+                    } else {
+                        let partials = game_status.partial_matches.entry(rom_name).or_default();
+                        partials.insert(filename.to_owned());
+                    }
+                }
+            } else {
+                //doesn't seem to be in the database, so check the hash and add it to the database
+                let hash = read_and_hash(&mut file, args.method)?;
+
+                //store the file and the hash in a hash table so that we can find renamed files
+                hash_to_file.entry(hash.clone()).or_default().insert(path_str.to_owned());
+
+                match_roms(db, args, debug, base_path, &file_path, &hash, found_games)?;
+            }
         }
     }
     Ok(())
