@@ -42,9 +42,9 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
-    match &cli.command {
+    match &mut cli.command {
         Commands::Database { db_command } => db_commands::handle_command(&cli.database, cli.debug, db_command),
         Commands::File {
             file_command,

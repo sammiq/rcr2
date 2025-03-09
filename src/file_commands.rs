@@ -88,32 +88,37 @@ struct GameStatus {
 pub fn handle_command(
     db: &mut database::Database,
     debug: bool,
-    command: &FileCommands,
+    command: &mut FileCommands,
     exclude_extensions: &[String],
 ) -> Result<()> {
     match command {
         FileCommands::Scan(args) => {
+            args.directory = resolve_directory(&args.directory)?;
             scan_directory(db, args, debug, exclude_extensions).context("Failed to scan directory")?;
         }
         FileCommands::Update(args) => {
+            args.directory = resolve_directory(&args.directory)?;
             update_directory(db, args, debug, exclude_extensions).context("Failed to update directory")?;
         }
         FileCommands::Check { directory } => {
-            check_directory(db, directory, debug, exclude_extensions).context("Failed to check directory")?;
+            let directory = resolve_directory(directory)?;
+            check_directory(db, &directory, debug, exclude_extensions).context("Failed to check directory")?;
         }
     }
     Ok(())
 }
 
-fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
-    // Verify directory exists and is a directory
-    if !args.directory.exists() {
-        return Err(anyhow!("Directory does not exist: {}", args.directory.display()));
+fn resolve_directory(directory: &Path) -> Result<PathBuf> {
+    if !directory.exists() {
+        return Err(anyhow!("Directory does not exist: {}", directory.display()));
     }
-    if !args.directory.is_dir() {
-        return Err(anyhow!("Not a directory: {}", args.directory.display()));
+    if !directory.is_dir() {
+        return Err(anyhow!("Not a directory: {}", directory.display()));
     }
+    directory.canonicalize().context("Failed to resolve directory to full path")
+}
 
+fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
     let base_path = args.directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
     let hash_method: &str = args.method.into();
 
@@ -156,14 +161,6 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
 }
 
 fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
-    // Verify directory exists and is a directory
-    if !args.directory.exists() {
-        return Err(anyhow!("Directory does not exist: {}", args.directory.display()));
-    }
-    if !args.directory.is_dir() {
-        return Err(anyhow!("Not a directory: {}", args.directory.display()));
-    }
-
     let base_path = args.directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
     let hash_method: &str = args.method.into();
 
@@ -266,14 +263,6 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
 }
 
 fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, exclude_extensions: &[String]) -> Result<()> {
-    // Verify directory exists and is a directory
-    if !directory.exists() {
-        return Err(anyhow!("Directory does not exist: {}", directory.display()));
-    }
-    if !directory.is_dir() {
-        return Err(anyhow!("Not a directory: {}", directory.display()));
-    }
-
     let base_path = directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
 
     println!("Checking directory: {}", base_path);
