@@ -136,14 +136,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
             continue;
         }
 
-        let path_str = path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
-        debug_log!(debug, "\nDebug: Processing file: {}", path_str);
-
-        let filename = path
-            .file_name()
-            .ok_or_else(|| anyhow!("Invalid file name"))?
-            .to_str()
-            .ok_or_else(|| anyhow!("error converting filename to string"))?;
+        debug_log!(debug, "\nDebug: Processing file: {}", path.display());
 
         // Check if this is a ZIP file
         if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
@@ -154,7 +147,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
         }
 
         let hash = open_and_hash_file(&path, args.method, debug)?;
-        match_roms(db, args, debug, base_path, path_str, filename, &hash, &mut found_games)?;
+        match_roms(db, args, debug, base_path, &path, &hash, &mut found_games)?;
     }
 
     print_found_games(&found_games);
@@ -227,7 +220,7 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
             //store the file and the hash in a hash table so that we can find renamed files
             hash_to_file.entry(hash.clone()).or_default().insert(filename.to_owned());
 
-            match_roms(db, args, debug, base_path, path_str, filename, &hash, &mut found_games)?;
+            match_roms(db, args, debug, base_path, &path, &hash, &mut found_games)?;
         }
     }
 
@@ -403,11 +396,16 @@ fn match_roms(
     args: &ScanArgs,
     debug: bool,
     base_path: &str,
-    file_path: &str,
-    filename: &str,
+    file_path: &Path,
     hash: &str,
     found_games: &mut BTreeMap<String, GameStatus>,
 ) -> Result<(), anyhow::Error> {
+    let filename = file_path
+    .file_name()
+    .ok_or_else(|| anyhow!("Invalid file name"))?
+    .to_str()
+    .ok_or_else(|| anyhow!("error converting filename to string"))?;
+    let path_str = file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
 
     let hash_method: &str = args.method.into();
 
@@ -417,7 +415,7 @@ fn match_roms(
     let results = db.search_roms(&criteria, &HashMap::new())?;
     let mut scanned_file = models::ScannedFile {
         base_path: base_path.to_owned(),
-        path: file_path.to_owned(),
+        path: path_str.to_owned(),
         hash: hash.to_owned(),
         hash_type: args.method.to_string(),
         match_type: String::from("miss"),
@@ -639,19 +637,20 @@ fn scan_zip_contents(
             continue;
         }
 
-        let filename = file.name().to_owned();
-        if let Some((_f, e)) = filename.rsplit_once('.') {
-            if exclude_extensions.contains(&e.to_owned()) {
-                continue;
+        if let Some(inner_path) = file.enclosed_name() {
+            if let Some(extension) = inner_path.extension().and_then(|n| n.to_str()) {
+                if exclude_extensions.contains(&extension.to_owned()) {
+                    continue;
+                }
             }
-        }
 
-        debug_log!(debug, "\nDebug: Processing zip entry: {}", filename);
-        let hash = read_and_hash(&mut file, args.method)?;
+            debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
+            let hash = read_and_hash(&mut file, args.method)?;
         
-        // Construct the full path including the zip file
-        let file_path = format!("{}:{}", base_path, filename);
-        match_roms(db, args, debug, base_path, &file_path, &filename, &hash, found_games)?
+            let file_path = zip_path.to_path_buf().join(inner_path);
+
+            match_roms(db, args, debug, base_path, &file_path, &hash, found_games)?
+        }
     }
     Ok(())
 }
