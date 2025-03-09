@@ -45,7 +45,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Database { db_command } => {db_commands::handle_command(&cli.database, cli.debug, db_command)},
+        Commands::Database { db_command } => db_commands::handle_command(&cli.database, cli.debug, db_command),
         Commands::File {
             file_command,
             exclude_extensions,
@@ -53,8 +53,11 @@ fn main() -> Result<()> {
             if let Some(mut db) = database::check_for_database(&cli.database, cli.debug) {
                 file_commands::handle_command(&mut db, cli.debug, file_command, exclude_extensions)
             } else {
-                Err(anyhow!("Database file {} does not exist, please initialize the database first", cli.database.display()))
+                Err(anyhow!(
+                    "Database file {} does not exist, please initialize the database first",
+                    cli.database.display()
+                ))
             }
-        },
+        }
     }
 }

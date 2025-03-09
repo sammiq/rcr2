@@ -3,12 +3,12 @@ use clap::{Args, Subcommand, ValueEnum};
 use crc32fast::Hasher;
 use md5::Md5;
 use sha1::{Digest, Sha1};
-use zip::ZipArchive;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, DirEntry};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use strum::{Display, IntoStaticStr};
+use zip::ZipArchive;
 
 use crate::models::Rom;
 use crate::{database, models};
@@ -401,10 +401,10 @@ fn match_roms(
     found_games: &mut BTreeMap<String, GameStatus>,
 ) -> Result<(), anyhow::Error> {
     let filename = file_path
-    .file_name()
-    .ok_or_else(|| anyhow!("Invalid file name"))?
-    .to_str()
-    .ok_or_else(|| anyhow!("error converting filename to string"))?;
+        .file_name()
+        .ok_or_else(|| anyhow!("Invalid file name"))?
+        .to_str()
+        .ok_or_else(|| anyhow!("error converting filename to string"))?;
     let path_str = file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
 
     let hash_method: &str = args.method.into();
@@ -630,7 +630,7 @@ fn scan_zip_contents(
 ) -> Result<()> {
     let file = fs::File::open(zip_path)?;
     let mut archive = ZipArchive::new(file)?;
-    
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         if file.is_dir() {
@@ -646,7 +646,7 @@ fn scan_zip_contents(
 
             debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
             let hash = read_and_hash(&mut file, args.method)?;
-        
+
             let file_path = zip_path.to_path_buf().join(inner_path);
 
             match_roms(db, args, debug, base_path, &file_path, &hash, found_games)?

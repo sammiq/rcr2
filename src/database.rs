@@ -19,9 +19,7 @@ pub fn check_for_database(path: &Path, debug: bool) -> Option<Database> {
     if path.is_file() {
         debug_log!(debug, "database file {} exists, will attempt to connect", path.display());
         match Database::new(path).context("Failed to connect to database") {
-            Ok(db) => {
-                Some(db)
-            }
+            Ok(db) => Some(db),
             Err(e) => {
                 debug_log!(debug, "failed to connect to database {}. error: {}", path.display(), e);
                 None
