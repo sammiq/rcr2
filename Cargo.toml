@@ -13,7 +13,7 @@ crc32fast = "1.4.2"
 md-5 = "0.10.6"
 sha1 = "0.10.6"
 strum = { version = "0.27", features = ["derive"] }
-zip = "2.2.2"
+zip = "2.2.3"
 
 [lints.clippy]
 # pedantic
