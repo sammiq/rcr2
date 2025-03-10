@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -42,19 +42,16 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
-    match &cli.command {
-        Commands::Database { db_command } => {db_commands::handle_command(&cli.database, cli.debug, db_command)},
+    match &mut cli.command {
+        Commands::Database { db_command } => db_commands::handle_command(&cli.database, cli.debug, db_command),
         Commands::File {
             file_command,
             exclude_extensions,
         } => {
-            if let Some(mut db) = database::check_for_database(&cli.database, cli.debug) {
-                file_commands::handle_command(&mut db, cli.debug, file_command, exclude_extensions)
-            } else {
-                Err(anyhow!("Database file {} does not exist, please initialize the database first", cli.database.display()))
-            }
-        },
+            let mut db = database::check_for_database(&cli.database, cli.debug)?;
+            file_commands::handle_command(&mut db, cli.debug, file_command, exclude_extensions)
+        }
     }
 }

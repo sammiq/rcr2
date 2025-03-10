@@ -1,5 +1,5 @@
 use crate::models::{DataFile, Game, Rom, ScannedFile};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
 use std::{collections::HashMap, path::Path};
 
@@ -15,23 +15,16 @@ pub struct Database {
     conn: Connection,
 }
 
-pub fn check_for_database(path: &Path, debug: bool) -> Option<Database> {
+pub fn check_for_database(path: &Path, debug: bool) -> Result<Database> {
     if path.is_file() {
         debug_log!(debug, "database file {} exists, will attempt to connect", path.display());
-        match Database::new(path).context("Failed to connect to database") {
-            Ok(db) => {
-                Some(db)
-            }
-            Err(e) => {
-                debug_log!(debug, "failed to connect to database {}. error: {}", path.display(), e);
-                None
-            }
-        }
+        let db = Database::new(path).context("Failed to connect to database")?;
+        Ok(db)
     } else {
-        debug_log!(debug, "database file {} does not exist", path.display());
-        None
+        Err(anyhow!("Database file {} does not exist, please initialize the database first", path.display()))
     }
 }
+
 impl Database {
     pub fn new(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;

@@ -4,7 +4,7 @@ rcr2: a rom auditing tool in Rust
 This tool uses logiqx xml format dat files, as provided by your friendly preservation site, for verifying your own dumps
 against known good versions of the same software.
 
-This is a complete rewrite of `rcr`, it supports stand-alone files only at the moment and is very much a work in progress.
+This is a complete rewrite of `rcr`, and is very much a work in progress.
 
 History
 -------

@@ -86,42 +86,34 @@ pub fn handle_command(db_path: &Path, debug: bool, command: &DbCommands) -> Resu
             let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
             db.merge_data(data).context("Failed to merge data into database")?;
             println!("Initialize completed successfully");
-            Ok(())
         }
         DbCommands::Import { input } => {
-            if let Some(mut db) = database::check_for_database(db_path, debug) {
-                let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
-                db.merge_data(data).context("Failed to merge data into database")?;
-                println!("Import completed successfully");
-                Ok(())
-            } else {
-                Err(anyhow!("Database file {} does not exist, please initialize the database first", db_path.display()))
-            }
+            let mut db = database::check_for_database(db_path, debug)?;
+            let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
+            db.merge_data(data).context("Failed to merge data into database")?;
+            println!("Import completed successfully");
         }
         DbCommands::Search { search_type } => {
-            if let Some(db) = database::check_for_database(db_path, debug) {
-                match search_type {
-                    SearchType::Game { name } => {
-                        let results = db.search_by_game_name(name, true).context("Failed to search database")?;
-                        if results.is_empty() {
-                            println!("No games found matching name: {}", name);
-                        } else {
-                            println!("Found {} matching game(s)", results.len());
-                            for game in results {
-                                print_game_with_roms(&game, &game.roms);
-                            }
+            let db = database::check_for_database(db_path, debug)?;
+            match search_type {
+                SearchType::Game { name } => {
+                    let results = db.search_by_game_name(name, true).context("Failed to search database")?;
+                    if results.is_empty() {
+                        println!("No games found matching name: {}", name);
+                    } else {
+                        println!("Found {} matching game(s)", results.len());
+                        for game in results {
+                            print_game_with_roms(&game, &game.roms);
                         }
                     }
-                    SearchType::Rom { name, crc, md5, sha1 } => {
-                        search_roms(&db, name, crc, md5, sha1)?;
-                    }
                 }
-                Ok(())
-            } else {
-                Err(anyhow!("Database file {} does not exist, please initialize the database first", db_path.display()))
+                SearchType::Rom { name, crc, md5, sha1 } => {
+                    search_roms(&db, name, crc, md5, sha1)?;
+                }
             }
         }
     }
+    Ok(())
 }
 
 fn search_roms(
