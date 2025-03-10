@@ -177,7 +177,7 @@ fn scan_file_contents(
 ) -> Result<String> {
     debug_log!(debug, "\nDebug: Processing file: {}", file_path.display());
     let hash = read_and_hash(file, args.method)?;
-    match_roms(db, args, debug, base_path, &file_path, &hash, found_games)?;
+    match_roms(db, args, debug, base_path, file_path, &hash, found_games)?;
     Ok(hash)
 }
 

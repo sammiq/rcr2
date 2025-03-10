@@ -94,7 +94,7 @@ pub fn handle_command(db_path: &Path, debug: bool, command: &DbCommands) -> Resu
             println!("Import completed successfully");
         }
         DbCommands::Search { search_type } => {
-            let mut db = database::check_for_database(db_path, debug)?;
+            let db = database::check_for_database(db_path, debug)?;
             match search_type {
                 SearchType::Game { name } => {
                     let results = db.search_by_game_name(name, true).context("Failed to search database")?;
