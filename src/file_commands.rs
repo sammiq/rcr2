@@ -141,15 +141,12 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
             continue;
         }
 
-        // Check if this is a ZIP file
-        if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
-            if extension.eq_ignore_ascii_case("zip") {
-                if let Err(e) = scan_zip_contents(db, args, debug, base_path, &path, exclude_extensions, &mut found_games) {
-                    //continue to next file if we have an error
-                    eprintln!("Failed to process ZIP file: {}", e);
-                }
-                continue;
+        if is_zip_file(&path) {
+            if let Err(e) = scan_zip_contents(db, args, debug, base_path, &path, exclude_extensions, &mut found_games) {
+                //continue to next file if we have an error
+                eprintln!("Failed to process ZIP file: {}", e);
             }
+            continue;
         }
 
         if let Err(e) = fs::File::open(&path)
@@ -164,6 +161,10 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
     print_found_games(&found_games);
 
     Ok(())
+}
+
+fn is_zip_file(path: &Path) -> bool {
+    path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("zip"))
 }
 
 fn scan_file_contents(
@@ -213,24 +214,22 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
         debug_log!(debug, "\nDebug: Processing file: {}", path.display());
 
         //check if this is a zip file and treat it accorgingly
-        if let Some(extension) = path.extension().and_then(|ext| ext.to_str()) {
-            if extension.eq_ignore_ascii_case("zip") {
-                if let Err(e) = update_zip_contents(
-                    db,
-                    args,
-                    debug,
-                    base_path,
-                    &path,
-                    exclude_extensions,
-                    &mut db_files,
-                    &mut hash_to_file,
-                    &mut found_games,
-                ) {
-                    //continue to next file if we have an error
-                    eprintln!("Failed to process ZIP file: {}", e);
-                }
-                continue;
+        if is_zip_file(&path) {
+            if let Err(e) = update_zip_contents(
+                db,
+                args,
+                debug,
+                base_path,
+                &path,
+                exclude_extensions,
+                &mut db_files,
+                &mut hash_to_file,
+                &mut found_games,
+            ) {
+                //continue to next file if we have an error
+                eprintln!("Failed to process ZIP file: {}", e);
             }
+            continue;
         }
 
         let filename = path
@@ -324,38 +323,29 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
         if should_skip_file(&path, exclude_extensions) {
             continue;
         }
-        let path_str = path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+        debug_log!(debug, "\nDebug: Processing file: {}", path.display());
 
-        //TODO check if this is a zip file and treat it accorgingly
+        if is_zip_file(&path) {
+            if let Err(e) = check_zip_file(debug, &path, exclude_extensions, &mut db_files) {
+                //continue to next file if we have an error
+                eprintln!("Failed to process ZIP file: {}", e);
+            }
+            continue;
+        }
 
+        let path_str = path.to_str().expect("should have a unicode path");
         if let Some(scanned_file) = db_files.remove(path_str) {
             let hash_method = HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
-            let hash = open_and_hash_file(&path, hash_method, debug)?;
-            if hash == scanned_file.hash {
-                match scanned_file.match_type.as_str() {
-                    "exact" => {
-                        println!(
-                            "[OK  ] {} {} (Game: {})",
-                            scanned_file.hash,
-                            scanned_file.path,
-                            scanned_file.game_name.expect("should have a game name")
-                        );
-                    }
-                    "partial" => {
-                        println!(
-                            "[NAME] {} {} (Expected: {}, Game: {})",
-                            scanned_file.hash,
-                            scanned_file.path,
-                            scanned_file.rom_name.expect("should have a rom name"),
-                            scanned_file.game_name.expect("should have a game name")
-                        );
-                    }
-                    _ => {
-                        println!("[MISS] {} {}", scanned_file.hash, scanned_file.path);
-                    }
+            match fs::File::open(&path)
+                .context("Unable to open file")
+                .and_then(|mut file| read_and_hash(&mut file, hash_method))
+            {
+                Ok(hash) => {
+                    print_scanned_file(hash, scanned_file);
                 }
-            } else {
-                println!("[HASH] {} {} (Expected: {})", hash, scanned_file.path, scanned_file.hash);
+                Err(e) => {
+                    eprintln!("Failed to process file: {}", e);
+                }
             }
         } else {
             println!("[NEW ] {}", path_str);
@@ -368,6 +358,35 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
     }
 
     Ok(())
+}
+
+fn print_scanned_file(hash: String, scanned_file: models::ScannedFile) {
+    if hash == scanned_file.hash {
+        match scanned_file.match_type.as_str() {
+            "exact" => {
+                println!(
+                    "[OK  ] {} {} (Game: {})",
+                    scanned_file.hash,
+                    scanned_file.path,
+                    scanned_file.game_name.expect("should have a game name")
+                );
+            }
+            "partial" => {
+                println!(
+                    "[NAME] {} {} (Expected: {}, Game: {})",
+                    scanned_file.hash,
+                    scanned_file.path,
+                    scanned_file.rom_name.expect("should have a rom name"),
+                    scanned_file.game_name.expect("should have a game name")
+                );
+            }
+            _ => {
+                println!("[MISS] {} {}", scanned_file.hash, scanned_file.path);
+            }
+        }
+    } else {
+        println!("[HASH] {} {} (Expected: {})", hash, scanned_file.path, scanned_file.hash);
+    }
 }
 
 // common code
@@ -400,13 +419,6 @@ fn should_skip_file(path: &Path, exclude_extensions: &[String]) -> bool {
     let path = path.to_str();
     // Skip files with strange paths
     path.is_none()
-}
-
-fn open_and_hash_file(path: &Path, method: HashMethod, debug: bool) -> Result<String> {
-    let mut file = fs::File::open(path)?;
-    let hash = read_and_hash(&mut file, method)?;
-    debug_log!(debug, "Calculated {} hash: {} for file: {}", method, hash, path.display());
-    Ok(hash)
 }
 
 fn read_and_hash(file: &mut impl Read, method: HashMethod) -> Result<String> {
@@ -599,10 +611,7 @@ fn handle_rom_matches(
             db.store_file(scanned_file)?;
         }
     } else if matches.partial.len() == 1 {
-        let (game_name, rom_name) = matches
-            .partial
-            .first()
-            .ok_or_else(|| anyhow!("should have a partial match"))?;
+        let (game_name, rom_name) = matches.partial.first().expect("should have a partial match");
         if args.rename {
             let mut new_pathname = args.directory.clone();
             new_pathname.push(rom_name);
@@ -692,7 +701,10 @@ fn scan_zip_contents(
             }
 
             let file_path = zip_path.to_path_buf().join(inner_path);
-            scan_file_contents(db, args, debug, base_path, &file_path, &mut file, found_games)?;
+            if let Err(e) = scan_file_contents(db, args, debug, base_path, &file_path, &mut file, found_games) {
+                //continue to next file if we have an error
+                eprintln!("Failed to process file: {}", e);
+            }
         }
     }
     Ok(())
@@ -728,23 +740,73 @@ fn update_zip_contents(
             let file_path = inner_path.clone();
             let filename = file_path
                 .file_name()
-                .ok_or_else(|| anyhow!("should have a file name"))?
+                .expect("should have a file name")
                 .to_str()
-                .ok_or_else(|| anyhow!("should have a unicode file name"))?;
+                .expect("should have a unicode file name");
 
             debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
             let file_path = zip_path.to_path_buf().join(inner_path);
-            let path_str = file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+            let path_str = file_path.to_str().expect("should have a unicode path");
 
             if let Some(scanned_file) = db_files.remove(path_str) {
                 //just treat the database as correct, and add it to the game status
                 update_found_file(db, filename, scanned_file, found_games);
             } else {
                 //doesn't seem to be in the database, so check the hash and add it to the database
-                let hash = scan_file_contents(db, args, debug, base_path, &file_path, &mut file, found_games)?;
+                match scan_file_contents(db, args, debug, base_path, &file_path, &mut file, found_games) {
+                    Ok(hash) => {
+                        //store the file and the hash in a hash table so that we can find renamed files
+                        hash_to_file.entry(hash.clone()).or_default().insert(path_str.to_owned());
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to process file: {}", e);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
-                //store the file and the hash in a hash table so that we can find renamed files
-                hash_to_file.entry(hash.clone()).or_default().insert(path_str.to_owned());
+fn check_zip_file(
+    debug: bool,
+    zip_path: &Path,
+    exclude_extensions: &[String],
+    db_files: &mut BTreeMap<String, models::ScannedFile>,
+) -> Result<()> {
+    let zip_file = fs::File::open(zip_path)?;
+    let mut archive = ZipArchive::new(zip_file)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        if file.is_dir() {
+            continue;
+        }
+
+        if let Some(inner_path) = file.enclosed_name() {
+            if let Some(extension) = inner_path.extension().and_then(|n| n.to_str()) {
+                if exclude_extensions.contains(&extension.to_owned()) {
+                    continue;
+                }
+            }
+
+            debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
+            let file_path = zip_path.to_path_buf().join(inner_path);
+            let path_str = file_path.to_str().expect("should have a unicode path");
+
+            if let Some(scanned_file) = db_files.remove(path_str) {
+                let hash_method =
+                    HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
+                match read_and_hash(&mut file, hash_method) {
+                    Ok(hash) => {
+                        print_scanned_file(hash, scanned_file);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to process file: {}", e);
+                    }
+                }
+            } else {
+                println!("[NEW ] {}", path_str);
             }
         }
     }
