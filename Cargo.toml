@@ -4,16 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde-xml-rs = "0.6.0"
-rusqlite = "0.34.0"
 anyhow = "1.0.97"
+camino = "1.1.9"
 clap = { version = "4.5.31", features = ["derive"] }
-serde = { version = "1.0.219", features = ["derive"] }
 crc32fast = "1.4.2"
 md-5 = "0.10.6"
+rusqlite = "0.34.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde-xml-rs = "0.6.0"
 sha1 = "0.10.6"
 strum = { version = "0.27", features = ["derive"] }
 zip = "2.2.3"
+
 
 [lints.clippy]
 # pedantic

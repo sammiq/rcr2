@@ -1,6 +1,6 @@
 use anyhow::Result;
+use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 
 mod database;
 mod db_commands;
@@ -13,7 +13,7 @@ mod xml_parser;
 struct Cli {
     /// Path to the database
     #[arg(short, long, default_value = ".rcr.db")]
-    database: PathBuf,
+    database: Utf8PathBuf,
 
     /// Enable debug output
     #[arg(long)]

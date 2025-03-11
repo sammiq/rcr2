@@ -1,7 +1,8 @@
 use crate::models::{DataFile, Game, Rom, ScannedFile};
 use anyhow::{anyhow, Context, Result};
+use camino::Utf8Path;
 use rusqlite::{params, Connection};
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
 
 macro_rules! debug_log {
     ($debug:expr, $($arg:tt)*) => {
@@ -15,18 +16,18 @@ pub struct Database {
     conn: Connection,
 }
 
-pub fn check_for_database(path: &Path, debug: bool) -> Result<Database> {
+pub fn check_for_database(path: &Utf8Path, debug: bool) -> Result<Database> {
     if path.is_file() {
-        debug_log!(debug, "database file {} exists, will attempt to connect", path.display());
+        debug_log!(debug, "database file {} exists, will attempt to connect", path);
         let db = Database::new(path).context("Failed to connect to database")?;
         Ok(db)
     } else {
-        Err(anyhow!("Database file {} does not exist, please initialize the database first", path.display()))
+        Err(anyhow!("Database file {} does not exist, please initialize the database first", path))
     }
 }
 
 impl Database {
-    pub fn new(path: &Path) -> Result<Self> {
+    pub fn new(path: &Utf8Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         Ok(Self { conn })
     }

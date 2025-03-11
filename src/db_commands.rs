@@ -1,9 +1,7 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::collections::HashMap;
 
 use anyhow::{anyhow, Context, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Subcommand;
 
 use crate::{database, models, xml_parser};
@@ -14,13 +12,13 @@ pub enum DbCommands {
     Initialize {
         /// Path to the XML file to import
         #[arg(short, long)]
-        input: PathBuf,
+        input: Utf8PathBuf,
     },
     /// Import data into the database
     Import {
         /// Path to the XML file to import
         #[arg(short, long)]
-        input: PathBuf,
+        input: Utf8PathBuf,
     },
     /// Search the database
     Search {
@@ -78,7 +76,7 @@ fn print_game_with_roms(game: &models::Game, roms: &[models::Rom]) {
     }
 }
 
-pub fn handle_command(db_path: &Path, debug: bool, command: &DbCommands) -> Result<()> {
+pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> Result<()> {
     match command {
         DbCommands::Initialize { input } => {
             let mut db = database::Database::new(db_path).context("Failed to connect to database")?;
