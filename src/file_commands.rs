@@ -32,6 +32,10 @@ pub enum FileCommands {
         /// Directory to scan (defaults to current directory)
         #[arg(short, long, default_value = ".")]
         directory: PathBuf,
+
+        /// Scan for files recursively
+        #[arg(short, long)]
+        recursive: bool,
     },
 }
 
@@ -45,17 +49,25 @@ pub struct ScanArgs {
     #[arg(long, value_enum, value_delimiter = ',', default_value = "exact,partial,miss")]
     file_display: Vec<DisplayMethod>,
 
-    /// Stop after first match for each file
-    #[arg(short, long, default_value = "true")]
+    /// Stop after first exact match for each file
+    #[arg(short, long, default_value = "false")]
     first_match: bool,
+
+    /// Ignore partial matches if there are exact matches
+    #[arg(short, long, default_value = "true")]
+    ignore_partial: bool,
 
     /// Directory to scan (defaults to current directory)
     #[arg(short, long, default_value = ".")]
     directory: PathBuf,
 
-    ///Rename files if unambiguous match is found
+    ///Fix the name of files if an unambiguous match is found
     #[arg(short, long)]
-    rename: bool,
+    fix: bool,
+
+    /// Scan for files recursively
+    #[arg(short, long)]
+    recursive: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, IntoStaticStr, Display)]
@@ -81,7 +93,7 @@ enum DisplayMethod {
 #[derive(Default)]
 struct GameStatus {
     roms: Vec<Rom>,
-    exact_matches: HashSet<String>,
+    exact_matches: HashMap<String, HashSet<String>>,
     partial_matches: HashMap<String, HashSet<String>>,
 }
 
@@ -100,7 +112,7 @@ pub fn handle_command(
             args.directory = resolve_directory(&args.directory)?;
             update_directory(db, args, debug, exclude_extensions).context("Failed to update directory")?;
         }
-        FileCommands::Check { directory } => {
+        FileCommands::Check { directory, recursive: _ } => {
             let directory = resolve_directory(directory)?;
             check_directory(db, &directory, debug, exclude_extensions).context("Failed to check directory")?;
         }
@@ -119,42 +131,64 @@ fn resolve_directory(directory: &Path) -> Result<PathBuf> {
 }
 
 fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
-    let base_path = args.directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
     let hash_method: &str = args.method.into();
 
-    println!("Scanning directory: {}", base_path);
     debug_log!(debug, "Using hash type: {}", hash_method);
 
     let mut found_games: BTreeMap<String, GameStatus> = BTreeMap::new();
 
-    // Read directory contents and sort by path
-    let mut paths: Vec<_> = fs::read_dir(&args.directory)?.filter_map(Result::ok).collect();
-    paths.sort_by_key(DirEntry::path);
+    let mut dir_stack: Vec<PathBuf> = Vec::new();
+    dir_stack.push(args.directory.clone());
 
-    //before we start scanning the directory, we need to clear the database of any files that have the same base path
-    db.clear_files_by_base_path(base_path)?;
+    while let Some(current_path) = dir_stack.pop() {
+        let current_dir = current_path.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
+        println!("Scanning directory: {}", current_dir);
 
-    for entry in paths {
-        let path = entry.path();
+        // Read directory contents and sort by path
+        let mut entries: Vec<_> = fs::read_dir(&current_path)?.filter_map(Result::ok).collect();
+        entries.sort_by_key(DirEntry::path);
 
-        if should_skip_file(&path, exclude_extensions) {
-            continue;
-        }
+        //before we start scanning the directory, we need to clear the database of any files that have the same base path
+        db.clear_files_by_base_path(current_dir)?;
 
-        if is_zip_file(&path) {
-            if let Err(e) = scan_zip_contents(db, args, debug, base_path, &path, exclude_extensions, &mut found_games) {
-                //continue to next file if we have an error
-                eprintln!("Failed to process ZIP file: {}", e);
+        for entry in entries {
+            let full_path = entry.path();
+
+            if full_path.is_dir() {
+                if args.recursive {
+                    debug_log!(debug, "\nDebug: Queuing directory: {}", full_path.display());
+                    dir_stack.push(full_path.clone());
+                }
+                continue;
             }
-            continue;
-        }
 
-        if let Err(e) = fs::File::open(&path)
-            .context("Unable to open file")
-            .and_then(|mut file| scan_file_contents(db, args, debug, base_path, &path, &mut file, &mut found_games))
-        {
-            //continue to next file if we have an error
-            eprintln!("Failed to process file: {}", e);
+            if should_skip_file(&full_path, exclude_extensions) {
+                continue;
+            }
+
+            let rel_path = full_path
+                .strip_prefix(&args.directory)
+                .expect("should be able to strip prefix");
+
+            if is_zip_file(&full_path) {
+                if let Err(e) =
+                    scan_zip_contents(db, args, debug, current_dir, &full_path, &rel_path, exclude_extensions, &mut found_games)
+                {
+                    //continue to next file if we have an error
+                    eprintln!("Failed to process ZIP file: {}", e);
+                }
+                continue;
+            }
+
+            if let Err(e) = fs::File::open(&full_path)
+                .context("Unable to open file")
+                .and_then(|mut file| {
+                    scan_file_contents(db, args, debug, current_dir, &full_path, &rel_path, &mut file, &mut found_games, true)
+                })
+            {
+                //continue to next file if we have an error
+                eprintln!("Failed to process file: {}", e);
+            }
         }
     }
 
@@ -163,28 +197,62 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
     Ok(())
 }
 
-fn is_zip_file(path: &Path) -> bool {
-    path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("zip"))
-}
-
 fn scan_file_contents(
     db: &database::Database,
     args: &ScanArgs,
     debug: bool,
-    base_path: &str,
-    file_path: &Path,
+    current_dir: &str,
+    full_file_path: &Path,
+    rel_file_path: &Path,
     file: &mut impl Read,
     found_games: &mut BTreeMap<String, GameStatus>,
+    can_rename: bool,
 ) -> Result<String> {
-    debug_log!(debug, "\nDebug: Processing file: {}", file_path.display());
+    debug_log!(debug, "\nDebug: Processing file: {}", rel_file_path.display());
     let hash = read_and_hash(file, args.method)?;
-    match_roms(db, args, debug, base_path, file_path, &hash, found_games)?;
+
+    let rel_path_str = rel_file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+    let filename = full_file_path
+        .file_name()
+        .ok_or_else(|| anyhow!("Invalid file name"))?
+        .to_str()
+        .ok_or_else(|| anyhow!("error converting filename to string"))?;
+    let full_path_str = full_file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+
+    let hash_method: &str = args.method.into();
+
+    let mut criteria = HashMap::new();
+    criteria.insert(hash_method, hash.as_str());
+
+    let results = db.search_roms(&criteria, &HashMap::new())?;
+    let mut scanned_file = models::ScannedFile {
+        base_path: current_dir.to_owned(), // base path is the current directory we are scanning
+        path: full_path_str.to_owned(),    // full path is the full path to the file from file system root
+        hash: hash.to_owned(),
+        hash_type: args.method.to_string(),
+        match_type: String::from("miss"),
+        game_name: None,
+        rom_name: None,
+    };
+    if results.is_empty() {
+        debug_log!(debug, "No matches found in database");
+        if args.file_display.contains(&DisplayMethod::Miss) {
+            println!("[MISS] {} {}", hash, rel_path_str);
+        }
+        db.store_file(&scanned_file)?;
+    } else {
+        debug_log!(debug, "Found {} matching entries in database", results.len());
+        let matches = check_rom_matches(db, args, debug, rel_path_str, filename, &results, found_games)?;
+        handle_rom_matches(db, args, debug, full_file_path, rel_path_str, &mut scanned_file, &matches, can_rename)?;
+    }
     Ok(hash)
 }
 
 fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
     let base_path = args.directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
     let hash_method: &str = args.method.into();
+
+    //FIXME recursive handling
 
     println!("Updating directory: {}", base_path);
     debug_log!(debug, "Using hash type: {}", hash_method);
@@ -211,7 +279,9 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
             continue;
         }
 
-        debug_log!(debug, "\nDebug: Processing file: {}", path.display());
+        //relative path from start of scan
+        let rel_path = path.strip_prefix(&args.directory).expect("should be able to strip prefix");
+        debug_log!(debug, "\nDebug: Processing file: {}", rel_path.display());
 
         //check if this is a zip file and treat it accorgingly
         if is_zip_file(&path) {
@@ -243,10 +313,9 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
             //just treat the database as correct, and add it to the game status
             update_found_file(db, filename, scanned_file, &mut found_games);
         } else {
-            match fs::File::open(&path)
-                .context("Unable to open file")
-                .and_then(|mut file| scan_file_contents(db, args, debug, base_path, &path, &mut file, &mut found_games))
-            {
+            match fs::File::open(&path).context("Unable to open file").and_then(|mut file| {
+                scan_file_contents(db, args, debug, base_path, &path, rel_path, &mut file, &mut found_games, true)
+            }) {
                 Ok(hash) => {
                     //store the file and the hash in a hash table so that we can find renamed files
                     hash_to_file.entry(hash.clone()).or_default().insert(path_str.to_owned());
@@ -291,10 +360,17 @@ fn update_found_file(
         let game_status = get_game_status(db, found_games, &game_name);
         let rom_name = scanned_file.rom_name.expect("should have a rom name if there is a game name");
         if scanned_file.match_type == "exact" {
-            game_status.exact_matches.insert(rom_name);
+            game_status
+                .exact_matches
+                .entry(rom_name)
+                .or_default()
+                .insert(filename.to_owned());
         } else {
-            let partials = game_status.partial_matches.entry(rom_name).or_default();
-            partials.insert(filename.to_owned());
+            game_status
+                .partial_matches
+                .entry(rom_name)
+                .or_default()
+                .insert(filename.to_owned());
         }
     }
 }
@@ -302,6 +378,7 @@ fn update_found_file(
 fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, exclude_extensions: &[String]) -> Result<()> {
     let base_path = directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
 
+    //FIXME recursive handling
     println!("Checking directory: {}", base_path);
 
     // Get all entries in the database with the same base path
@@ -323,7 +400,9 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
         if should_skip_file(&path, exclude_extensions) {
             continue;
         }
-        debug_log!(debug, "\nDebug: Processing file: {}", path.display());
+
+        let rel_path = path.strip_prefix(&directory).expect("should be able to strip prefix");
+        debug_log!(debug, "\nDebug: Processing file: {}", rel_path.display());
 
         if is_zip_file(&path) {
             if let Err(e) = check_zip_file(debug, &path, exclude_extensions, &mut db_files) {
@@ -421,6 +500,10 @@ fn should_skip_file(path: &Path, exclude_extensions: &[String]) -> bool {
     path.is_none()
 }
 
+fn is_zip_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+}
+
 fn read_and_hash(file: &mut impl Read, method: HashMethod) -> Result<String> {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
@@ -450,51 +533,6 @@ fn calculate_hash(data: &[u8], hash_type: HashMethod) -> Result<String> {
     }
 }
 
-fn match_roms(
-    db: &database::Database,
-    args: &ScanArgs,
-    debug: bool,
-    base_path: &str,
-    file_path: &Path,
-    hash: &str,
-    found_games: &mut BTreeMap<String, GameStatus>,
-) -> Result<(), anyhow::Error> {
-    let filename = file_path
-        .file_name()
-        .ok_or_else(|| anyhow!("Invalid file name"))?
-        .to_str()
-        .ok_or_else(|| anyhow!("error converting filename to string"))?;
-    let path_str = file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
-
-    let hash_method: &str = args.method.into();
-
-    let mut criteria = HashMap::new();
-    criteria.insert(hash_method, hash);
-
-    let results = db.search_roms(&criteria, &HashMap::new())?;
-    let mut scanned_file = models::ScannedFile {
-        base_path: base_path.to_owned(),
-        path: path_str.to_owned(),
-        hash: hash.to_owned(),
-        hash_type: args.method.to_string(),
-        match_type: String::from("miss"),
-        game_name: None,
-        rom_name: None,
-    };
-    if results.is_empty() {
-        debug_log!(debug, "No matches found in database");
-        if args.file_display.contains(&DisplayMethod::Miss) {
-            println!("[MISS] {} {}", hash, filename);
-        }
-        db.store_file(&scanned_file)?;
-    } else {
-        debug_log!(debug, "Found {} matching entries in database", results.len());
-        let matches = check_rom_matches(db, args, debug, filename, &results, found_games)?;
-        handle_rom_matches(db, args, debug, filename, &mut scanned_file, &matches)?;
-    }
-    Ok(())
-}
-
 struct Matches {
     exact: Vec<(String, String)>,
     partial: Vec<(String, String)>,
@@ -504,6 +542,7 @@ fn check_rom_matches(
     db: &database::Database,
     args: &ScanArgs,
     debug: bool,
+    rel_path_str: &str,
     filename: &str,
     results: &Vec<(models::Game, Vec<models::Rom>)>,
     found_games: &mut BTreeMap<String, GameStatus>,
@@ -539,16 +578,21 @@ fn check_rom_matches(
             }
 
             if rom.name == filename {
-                debug_log!(debug, "Found exact match");
-                game_status.exact_matches.insert(filename.to_owned());
+                debug_log!(debug, "Found exact match for file: {}", rel_path_str);
+                game_status
+                    .exact_matches
+                    .entry(rom.name.clone())
+                    .or_default()
+                    .insert(rel_path_str.to_owned());
                 exact_matches.push((game.name.clone(), rom.name.clone()));
             } else {
+                debug_log!(debug, "Found partial match for file: {}", rel_path_str);
                 partial_matches.push((game.name.clone(), rom.name.clone()));
                 game_status
                     .partial_matches
                     .entry(rom.name.clone())
                     .or_default()
-                    .insert(filename.to_owned());
+                    .insert(rel_path_str.to_owned());
             }
         }
     }
@@ -570,7 +614,7 @@ fn get_game_status<'a>(
         let game = games.first().expect("Game could not be found in database");
         GameStatus {
             roms: game.roms.clone(),
-            exact_matches: HashSet::new(),
+            exact_matches: HashMap::new(),
             partial_matches: HashMap::new(),
         }
     })
@@ -580,26 +624,36 @@ fn handle_rom_matches(
     db: &database::Database,
     args: &ScanArgs,
     debug: bool,
-    filename: &str,
+    full_file_path: &Path,
+    rel_path_str: &str,
     scanned_file: &mut models::ScannedFile,
     matches: &Matches,
+    can_rename: bool,
 ) -> Result<()> {
+    debug_log!(debug, "Checking matches for file: {}", rel_path_str);
+
     if !matches.exact.is_empty() {
-        // If we have exact matches, print all of them and ignore partial matches
         for (game_name, rom_name) in &matches.exact {
             if args.file_display.contains(&DisplayMethod::Exact) {
-                println!("[OK  ] {} {} (Game: {})", scanned_file.hash, filename, game_name);
+                println!("[OK  ] {} {} (Game: {})", scanned_file.hash, rel_path_str, game_name);
             }
 
             update_scanned(scanned_file, "exact", game_name, rom_name);
             db.store_file(scanned_file)?;
+            //if this is set, don't bother printing other matches
             if args.first_match {
                 return Ok(());
             }
         }
-    } else if matches.partial.len() > 1 {
+        //if this is set, don't bother with partial matches
+        if args.ignore_partial {
+            return Ok(());
+        }
+    }
+
+    if matches.partial.len() > 1 {
         if args.file_display.contains(&DisplayMethod::Partial) {
-            println!("[NAME] {} {}. (Multiple matches)", scanned_file.hash, filename);
+            println!("[NAME] {} {}. (Multiple matches)", scanned_file.hash, rel_path_str);
         }
         // If we only have partial matches, print all of them
         for (game_name, rom_name) in &matches.partial {
@@ -612,9 +666,8 @@ fn handle_rom_matches(
         }
     } else if matches.partial.len() == 1 {
         let (game_name, rom_name) = matches.partial.first().expect("should have a partial match");
-        if args.rename {
-            let mut new_pathname = args.directory.clone();
-            new_pathname.push(rom_name);
+        if can_rename && args.fix {
+            let new_pathname = full_file_path.with_file_name(rom_name);
             debug_log!(debug, "Renaming file from: {} to: {}", scanned_file.path, new_pathname.display());
             fs::rename(&scanned_file.path, new_pathname)?;
             if args.file_display.contains(&DisplayMethod::Exact) {
@@ -625,7 +678,7 @@ fn handle_rom_matches(
             db.store_file(scanned_file)?;
         } else {
             if args.file_display.contains(&DisplayMethod::Partial) {
-                println!("[NAME]   {} {} (Expected: {} Game: {})", scanned_file.hash, filename, rom_name, game_name);
+                println!("[NAME]   {} {} (Expected: {} Game: {})", scanned_file.hash, rel_path_str, rom_name, game_name);
             }
 
             update_scanned(scanned_file, "partial", game_name, rom_name);
@@ -652,6 +705,13 @@ fn print_found_games(found_games: &BTreeMap<String, GameStatus>) {
         if exact_count > 0 || total_count == status.roms.len() {
             if exact_count == status.roms.len() {
                 println!("[FULL] {}", game_name);
+                for (rom_name, filenames) in &status.exact_matches {
+                    if filenames.len() > 1 {
+                        for filename in filenames {
+                            println!("[DUPE]   {} (File: {})", rom_name, filename);
+                        }
+                    }
+                }
             } else {
                 println!(
                     "[PART] {} ({} exact matches, {} partial matches. {} missing)",
@@ -666,7 +726,7 @@ fn print_found_games(found_games: &BTreeMap<String, GameStatus>) {
                     }
                 }
                 for rom in &status.roms {
-                    if !status.exact_matches.contains(&rom.name) && !status.partial_matches.contains_key(&rom.name) {
+                    if !status.exact_matches.contains_key(&rom.name) && !status.partial_matches.contains_key(&rom.name) {
                         println!("[MISS]   {}", rom.name);
                     }
                 }
@@ -681,6 +741,7 @@ fn scan_zip_contents(
     debug: bool,
     base_path: &str,
     zip_path: &Path,
+    rel_zip_path: &Path,
     exclude_extensions: &[String],
     found_games: &mut BTreeMap<String, GameStatus>,
 ) -> Result<()> {
@@ -700,8 +761,11 @@ fn scan_zip_contents(
                 }
             }
 
-            let file_path = zip_path.to_path_buf().join(inner_path);
-            if let Err(e) = scan_file_contents(db, args, debug, base_path, &file_path, &mut file, found_games) {
+            let file_path = zip_path.join(&inner_path);
+            let rel_file_path = rel_zip_path.join(&inner_path);
+            if let Err(e) =
+                scan_file_contents(db, args, debug, base_path, &file_path, &rel_file_path, &mut file, found_games, false)
+            {
                 //continue to next file if we have an error
                 eprintln!("Failed to process file: {}", e);
             }
@@ -753,7 +817,8 @@ fn update_zip_contents(
                 update_found_file(db, filename, scanned_file, found_games);
             } else {
                 //doesn't seem to be in the database, so check the hash and add it to the database
-                match scan_file_contents(db, args, debug, base_path, &file_path, &mut file, found_games) {
+                //FIXME relative path is wrong
+                match scan_file_contents(db, args, debug, base_path, &file_path, &file_path, &mut file, found_games, false) {
                     Ok(hash) => {
                         //store the file and the hash in a hash table so that we can find renamed files
                         hash_to_file.entry(hash.clone()).or_default().insert(path_str.to_owned());
