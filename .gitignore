@@ -20,4 +20,4 @@ perf.data*
 perf.hist*
 .env
 .rcr.db
-
+.rcr.db-journal
