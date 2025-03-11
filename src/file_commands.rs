@@ -669,16 +669,25 @@ fn handle_rom_matches(
         if can_rename && args.fix {
             let new_pathname = full_file_path.with_file_name(rom_name);
             debug_log!(debug, "Renaming file from: {} to: {}", scanned_file.path, new_pathname.display());
-            fs::rename(&scanned_file.path, new_pathname)?;
-            if args.file_display.contains(&DisplayMethod::Exact) {
-                println!("[OK  ] {} {} (Game: {})", scanned_file.hash, rom_name, game_name);
+            if let Err(e) = fs::rename(&scanned_file.path, new_pathname) {
+                eprintln!("Failed to rename file: {}", e);
+                if args.file_display.contains(&DisplayMethod::Partial) {
+                    println!("[NAME] {} {} (Expected: {} Game: {})", scanned_file.hash, rel_path_str, rom_name, game_name);
+                }
+    
+                update_scanned(scanned_file, "partial", game_name, rom_name);
+                db.store_file(scanned_file)?;
+            } else {
+                if args.file_display.contains(&DisplayMethod::Exact) {
+                    println!("[OK  ] {} {} (Game: {})", scanned_file.hash, rom_name, game_name);
+                }
+    
+                update_scanned(scanned_file, "exact", game_name, rom_name);
+                db.store_file(scanned_file)?;
             }
-
-            update_scanned(scanned_file, "exact", game_name, rom_name);
-            db.store_file(scanned_file)?;
         } else {
             if args.file_display.contains(&DisplayMethod::Partial) {
-                println!("[NAME]   {} {} (Expected: {} Game: {})", scanned_file.hash, rel_path_str, rom_name, game_name);
+                println!("[NAME] {} {} (Expected: {} Game: {})", scanned_file.hash, rel_path_str, rom_name, game_name);
             }
 
             update_scanned(scanned_file, "partial", game_name, rom_name);
