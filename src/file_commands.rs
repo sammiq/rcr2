@@ -485,57 +485,63 @@ fn update_found_file(
 
 // check functions
 
-fn check_directory(db: &database::Database, directory: &Utf8PathBuf, debug: bool, exclude_extensions: &[String]) -> Result<()> {
-    //FIXME recursive handling
-    println!("Checking directory: {}", directory);
+fn check_directory(db: &database::Database, directory: &Utf8Path, debug: bool, exclude_extensions: &[String]) -> Result<()> {
+    
+    let mut dir_stack: Vec<Utf8PathBuf> = Vec::new();
+    dir_stack.push(directory.into());
 
-    // Get all entries in the database with the same base path
-    let files = db.get_files_by_base_path(directory.as_str())?;
-    // Create a HashMap of the files in the database
     let mut db_files = BTreeMap::new();
-    for file in files {
-        db_files.insert(file.path.clone(), file);
-    }
-    // Read directory contents and sort by path
-    let mut entries: Vec<_> = directory.read_dir_utf8()?.filter_map(Result::ok).collect();
-    entries.sort_by_key(|entry| entry.path().to_owned());
 
-    // for each file in the directory, check if its in the database or not
-    // and report it on the console
-    for entry in entries {
-        let path = entry.path();
-        // Skip directories and non-files
+    while let Some(current_path) = dir_stack.pop() {
+        println!("Checking directory: {}", current_path);
 
-        if should_skip_file(path, exclude_extensions) {
-            continue;
+        // Get all entries in the database with the same base path
+        let files = db.get_files_by_base_path(current_path.as_str())?;
+        // Create a HashMap of the files in the database
+        for file in files {
+            db_files.insert(file.path.clone(), file);
         }
+        // Read directory contents and sort by path
+        let mut entries: Vec<_> = current_path.read_dir_utf8()?.filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.path().to_owned());
 
-        let rel_path = path.strip_prefix(directory).expect("should be able to strip prefix");
-        debug_log!(debug, "\nDebug: Processing file: {}", rel_path);
+        // for each file in the directory, check if its in the database or not
+        // and report it on the console
+        for entry in entries {
+            let path = entry.path();
+            // Skip directories and non-files
 
-        if is_zip_file(path) {
-            if let Err(e) = check_zip_file(debug, path, exclude_extensions, &mut db_files) {
-                //continue to next file if we have an error
-                eprintln!("Failed to process ZIP file: {}", e);
+            if should_skip_file(path, exclude_extensions) {
+                continue;
             }
-            continue;
-        }
 
-        if let Some(scanned_file) = db_files.remove(path.as_str()) {
-            let hash_method = HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
-            match fs::File::open(path)
-                .context("Unable to open file")
-                .and_then(|mut file| read_and_hash(&mut file, hash_method))
-            {
-                Ok(hash) => {
-                    print_scanned_file(hash, scanned_file);
+            let rel_path = path.strip_prefix(&current_path).expect("should be able to strip prefix");
+            debug_log!(debug, "\nDebug: Processing file: {}", rel_path);
+
+            if is_zip_file(path) {
+                if let Err(e) = check_zip_file(debug, path, exclude_extensions, &mut db_files) {
+                    //continue to next file if we have an error
+                    eprintln!("Failed to process ZIP file: {}", e);
                 }
-                Err(e) => {
-                    eprintln!("Failed to process file: {}", e);
-                }
+                continue;
             }
-        } else {
-            println!("[NEW ] {}", path);
+
+            if let Some(scanned_file) = db_files.remove(path.as_str()) {
+                let hash_method = HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
+                match fs::File::open(path)
+                    .context("Unable to open file")
+                    .and_then(|mut file| read_and_hash(&mut file, hash_method))
+                {
+                    Ok(hash) => {
+                        print_scanned_file(hash, scanned_file);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to process file: {}", e);
+                    }
+                }
+            } else {
+                println!("[NEW ] {}", path);
+            }
         }
     }
 
