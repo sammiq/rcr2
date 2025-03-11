@@ -173,7 +173,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
 
             if is_zip_file(&full_path) {
                 if let Err(e) =
-                    scan_zip_contents(db, args, debug, current_dir, &full_path, &rel_path, exclude_extensions, &mut found_games)
+                    scan_zip_contents(db, args, debug, current_dir, &full_path, rel_path, exclude_extensions, &mut found_games)
                 {
                     //continue to next file if we have an error
                     eprintln!("Failed to process ZIP file: {}", e);
@@ -184,7 +184,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
             if let Err(e) = fs::File::open(&full_path)
                 .context("Unable to open file")
                 .and_then(|mut file| {
-                    scan_file_contents(db, args, debug, current_dir, &full_path, &rel_path, &mut file, &mut found_games, true)
+                    scan_file_contents(db, args, debug, current_dir, &full_path, rel_path, &mut file, &mut found_games, true)
                 })
             {
                 //continue to next file if we have an error
@@ -343,7 +343,7 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
                     debug,
                     current_dir,
                     &full_path,
-                    &rel_file_path,
+                    rel_file_path,
                     exclude_extensions,
                     &mut db_files,
                     &mut hash_to_file,
@@ -428,14 +428,8 @@ fn update_zip_contents(
                 }
             }
 
-            let file_path = inner_path.clone();
-            let filename = file_path
-                .file_name()
-                .expect("should have a file name")
-                .to_str()
-                .expect("should have a unicode file name");
-
             debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
+
             let file_path = zip_path.join(&inner_path);
             let path_str = file_path.to_str().expect("should have a unicode path");
             let rel_file_path = rel_zip_path.join(&inner_path);
@@ -514,7 +508,7 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
             continue;
         }
 
-        let rel_path = path.strip_prefix(&directory).expect("should be able to strip prefix");
+        let rel_path = path.strip_prefix(directory).expect("should be able to strip prefix");
         debug_log!(debug, "\nDebug: Processing file: {}", rel_path.display());
 
         if is_zip_file(&path) {
