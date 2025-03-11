@@ -1,12 +1,12 @@
 use anyhow::{anyhow, Context, Result};
+use camino::{Utf8DirEntry, Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand, ValueEnum};
 use crc32fast::Hasher;
 use md5::Md5;
 use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::{self, DirEntry};
+use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
 use strum::{Display, IntoStaticStr};
 use zip::ZipArchive;
 
@@ -31,7 +31,7 @@ pub enum FileCommands {
     Check {
         /// Directory to scan (defaults to current directory)
         #[arg(short, long, default_value = ".")]
-        directory: PathBuf,
+        directory: Utf8PathBuf,
 
         /// Scan for files recursively
         #[arg(short, long)]
@@ -59,7 +59,7 @@ pub struct ScanArgs {
 
     /// Directory to scan (defaults to current directory)
     #[arg(short, long, default_value = ".")]
-    directory: PathBuf,
+    directory: Utf8PathBuf,
 
     /// Fix the name of files if an unambiguous match is found
     #[arg(short, long)]
@@ -120,14 +120,16 @@ pub fn handle_command(
     Ok(())
 }
 
-fn resolve_directory(directory: &Path) -> Result<PathBuf> {
+fn resolve_directory(directory: &Utf8PathBuf) -> Result<Utf8PathBuf> {
     if !directory.exists() {
-        return Err(anyhow!("Directory does not exist: {}", directory.display()));
+        return Err(anyhow!("Directory does not exist: {}", directory));
     }
     if !directory.is_dir() {
-        return Err(anyhow!("Not a directory: {}", directory.display()));
+        return Err(anyhow!("Not a directory: {}", directory));
     }
-    directory.canonicalize().context("Failed to resolve directory to full path")
+    directory
+        .canonicalize_utf8()
+        .context("Failed to resolve directory to full path")
 }
 
 // scan functions
@@ -138,16 +140,16 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
 
     let mut found_games: BTreeMap<String, GameStatus> = BTreeMap::new();
 
-    let mut dir_stack: Vec<PathBuf> = Vec::new();
+    let mut dir_stack: Vec<Utf8PathBuf> = Vec::new();
     dir_stack.push(args.directory.clone());
 
     while let Some(current_path) = dir_stack.pop() {
-        let current_dir = current_path.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
+        let current_dir = current_path.as_str();
         println!("Scanning directory: {}", current_dir);
 
         // Read directory contents and sort by path
-        let mut entries: Vec<_> = fs::read_dir(&current_path)?.filter_map(Result::ok).collect();
-        entries.sort_by_key(DirEntry::path);
+        let mut entries: Vec<Utf8DirEntry> = current_path.read_dir_utf8()?.filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.path().to_owned());
 
         //before we start scanning the directory, we need to clear the database of any files that have the same base path
         db.clear_files_by_base_path(current_dir)?;
@@ -157,13 +159,13 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
 
             if full_path.is_dir() {
                 if args.recursive {
-                    debug_log!(debug, "\nDebug: Queuing directory: {}", full_path.display());
-                    dir_stack.push(full_path.clone());
+                    debug_log!(debug, "\nDebug: Queuing directory: {}", full_path);
+                    dir_stack.push(full_path.into());
                 }
                 continue;
             }
 
-            if should_skip_file(&full_path, exclude_extensions) {
+            if should_skip_file(full_path, exclude_extensions) {
                 continue;
             }
 
@@ -171,9 +173,9 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
                 .strip_prefix(&args.directory)
                 .expect("should be able to strip prefix");
 
-            if is_zip_file(&full_path) {
+            if is_zip_file(full_path) {
                 if let Err(e) =
-                    scan_zip_contents(db, args, debug, current_dir, &full_path, rel_path, exclude_extensions, &mut found_games)
+                    scan_zip_contents(db, args, debug, current_dir, full_path, rel_path, exclude_extensions, &mut found_games)
                 {
                     //continue to next file if we have an error
                     eprintln!("Failed to process ZIP file: {}", e);
@@ -181,10 +183,10 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
                 continue;
             }
 
-            if let Err(e) = fs::File::open(&full_path)
+            if let Err(e) = fs::File::open(full_path)
                 .context("Unable to open file")
                 .and_then(|mut file| {
-                    scan_file_contents(db, args, debug, current_dir, &full_path, rel_path, &mut file, &mut found_games, true)
+                    scan_file_contents(db, args, debug, current_dir, full_path, rel_path, &mut file, &mut found_games, true)
                 })
             {
                 //continue to next file if we have an error
@@ -203,8 +205,8 @@ fn scan_zip_contents(
     args: &ScanArgs,
     debug: bool,
     base_path: &str,
-    zip_path: &Path,
-    rel_zip_path: &Path,
+    zip_path: &Utf8Path,
+    rel_zip_path: &Utf8Path,
     exclude_extensions: &[String],
     found_games: &mut BTreeMap<String, GameStatus>,
 ) -> Result<()> {
@@ -217,8 +219,8 @@ fn scan_zip_contents(
             continue;
         }
 
-        if let Some(inner_path) = file.enclosed_name() {
-            if let Some(extension) = inner_path.extension().and_then(|n| n.to_str()) {
+        if let Some(inner_path) = file.enclosed_name().and_then(|p| Utf8PathBuf::try_from(p).ok()) {
+            if let Some(extension) = inner_path.extension() {
                 if exclude_extensions.contains(&extension.to_owned()) {
                     continue;
                 }
@@ -242,22 +244,18 @@ fn scan_file_contents(
     args: &ScanArgs,
     debug: bool,
     current_dir: &str,
-    full_file_path: &Path,
-    rel_file_path: &Path,
+    full_file_path: &Utf8Path,
+    rel_file_path: &Utf8Path,
     file: &mut impl Read,
     found_games: &mut BTreeMap<String, GameStatus>,
     can_rename: bool,
 ) -> Result<String> {
-    debug_log!(debug, "\nDebug: Processing file: {}", rel_file_path.display());
+    debug_log!(debug, "\nDebug: Processing file: {}", rel_file_path);
     let hash = read_and_hash(file, args.method)?;
 
-    let rel_path_str = rel_file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
-    let filename = full_file_path
-        .file_name()
-        .ok_or_else(|| anyhow!("Invalid file name"))?
-        .to_str()
-        .ok_or_else(|| anyhow!("error converting filename to string"))?;
-    let full_path_str = full_file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+    let rel_path_str = rel_file_path.as_str();
+    let filename = full_file_path.file_name().ok_or_else(|| anyhow!("Invalid file name"))?;
+    let full_path_str = full_file_path.as_str();
 
     let hash_method: &str = args.method.into();
 
@@ -294,16 +292,16 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
     let hash_method: &str = args.method.into();
     debug_log!(debug, "Using hash type: {}", hash_method);
 
-    let mut dir_stack: Vec<PathBuf> = Vec::new();
+    let mut dir_stack: Vec<Utf8PathBuf> = Vec::new();
     dir_stack.push(args.directory.clone());
 
-    let mut found_games: BTreeMap<String, GameStatus> = BTreeMap::new(); 
+    let mut found_games: BTreeMap<String, GameStatus> = BTreeMap::new();
 
     let mut db_files = BTreeMap::new();
     let mut hash_to_file: BTreeMap<String, HashSet<String>> = BTreeMap::new();
 
     while let Some(current_path) = dir_stack.pop() {
-        let current_dir = current_path.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
+        let current_dir = current_path.as_str();
         println!("Updating directory: {}", current_dir);
 
         // Get all entries in the database with the same base path
@@ -313,36 +311,38 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
         }
 
         // Read directory contents and sort by path
-        let mut entries: Vec<_> = fs::read_dir(&current_path)?.filter_map(Result::ok).collect();
-        entries.sort_by_key(DirEntry::path);
+        let mut entries: Vec<Utf8DirEntry> = current_path.read_dir_utf8()?.filter_map(Result::ok).collect();
+        entries.sort_by_key(|entry| entry.path().to_owned());
 
         for entry in entries {
             let full_path = entry.path();
 
             if full_path.is_dir() {
                 if args.recursive {
-                    debug_log!(debug, "\nDebug: Queuing directory: {}", full_path.display());
-                    dir_stack.push(full_path.clone());
+                    debug_log!(debug, "\nDebug: Queuing directory: {}", full_path);
+                    dir_stack.push(full_path.into());
                 }
                 continue;
             }
 
-            if should_skip_file(&full_path, exclude_extensions) {
+            if should_skip_file(full_path, exclude_extensions) {
                 continue;
             }
 
             //relative path from start of scan
-            let rel_file_path = full_path.strip_prefix(&args.directory).expect("should be able to strip prefix");
-            debug_log!(debug, "\nDebug: Processing file: {}", rel_file_path.display());
+            let rel_file_path = full_path
+                .strip_prefix(&args.directory)
+                .expect("should be able to strip prefix");
+            debug_log!(debug, "\nDebug: Processing file: {}", rel_file_path);
 
             //check if this is a zip file and treat it accorgingly
-            if is_zip_file(&full_path) {
+            if is_zip_file(full_path) {
                 if let Err(e) = update_zip_contents(
                     db,
                     args,
                     debug,
                     current_dir,
-                    &full_path,
+                    full_path,
                     rel_file_path,
                     exclude_extensions,
                     &mut db_files,
@@ -355,16 +355,28 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
                 continue;
             }
 
-            let path_str = full_path.to_str().expect("should have a unicode path");
+            let path_str = full_path.as_str();
 
             if let Some(scanned_file) = db_files.remove(path_str) {
                 //just treat the database as correct, and add it to the game status without recalculating the hash
-                let rel_path_str = rel_file_path.to_str().ok_or_else(|| anyhow!("Invalid path"))?;
+                let rel_path_str = rel_file_path.as_str();
                 update_found_file(db, rel_path_str, scanned_file, &mut found_games);
             } else {
-                match fs::File::open(&full_path).context("Unable to open file").and_then(|mut file| {
-                    scan_file_contents(db, args, debug, current_dir, &full_path, rel_file_path, &mut file, &mut found_games, true)
-                }) {
+                match fs::File::open(full_path)
+                    .context("Unable to open file")
+                    .and_then(|mut file| {
+                        scan_file_contents(
+                            db,
+                            args,
+                            debug,
+                            current_dir,
+                            full_path,
+                            rel_file_path,
+                            &mut file,
+                            &mut found_games,
+                            true,
+                        )
+                    }) {
                     Ok(hash) => {
                         //store the file and the hash in a hash table so that we can find renamed files
                         hash_to_file.entry(hash.clone()).or_default().insert(path_str.to_owned());
@@ -405,8 +417,8 @@ fn update_zip_contents(
     args: &ScanArgs,
     debug: bool,
     current_dir: &str,
-    zip_path: &Path,
-    rel_zip_path: &Path,
+    zip_path: &Utf8Path,
+    rel_zip_path: &Utf8Path,
     exclude_extensions: &[String],
     db_files: &mut BTreeMap<String, models::ScannedFile>,
     hash_to_file: &mut BTreeMap<String, HashSet<String>>,
@@ -421,19 +433,19 @@ fn update_zip_contents(
             continue;
         }
 
-        if let Some(inner_path) = file.enclosed_name() {
-            if let Some(extension) = inner_path.extension().and_then(|n| n.to_str()) {
+        if let Some(inner_path) = file.enclosed_name().and_then(|p| Utf8PathBuf::try_from(p).ok()) {
+            if let Some(extension) = inner_path.extension() {
                 if exclude_extensions.contains(&extension.to_owned()) {
                     continue;
                 }
             }
 
-            debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
+            debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path);
 
             let file_path = zip_path.join(&inner_path);
-            let path_str = file_path.to_str().expect("should have a unicode path");
+            let path_str = file_path.as_str();
             let rel_file_path = rel_zip_path.join(&inner_path);
-            let rel_path_str = rel_file_path.to_str().expect("should have a unicode path");
+            let rel_path_str = rel_file_path.as_str();
 
             if let Some(scanned_file) = db_files.remove(path_str) {
                 //just treat the database as correct, and add it to the game status
@@ -482,8 +494,8 @@ fn update_found_file(
 
 // check functions
 
-fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, exclude_extensions: &[String]) -> Result<()> {
-    let base_path = directory.to_str().ok_or_else(|| anyhow!("Invalid base path"))?;
+fn check_directory(db: &database::Database, directory: &Utf8PathBuf, debug: bool, exclude_extensions: &[String]) -> Result<()> {
+    let base_path = directory.as_str();
 
     //FIXME recursive handling
     println!("Checking directory: {}", base_path);
@@ -496,33 +508,34 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
         db_files.insert(file.path.clone(), file);
     }
     // Read directory contents and sort by path
-    let mut paths: Vec<_> = fs::read_dir(directory)?.filter_map(Result::ok).collect();
-    paths.sort_by_key(DirEntry::path);
+    let mut entries: Vec<_> = directory.read_dir_utf8()?.filter_map(Result::ok).collect();
+    entries.sort_by_key(|entry| entry.path().to_owned());
+
     // for each file in the directory, check if its in the database or not
     // and report it on the console
-    for entry in paths {
+    for entry in entries {
         let path = entry.path();
         // Skip directories and non-files
 
-        if should_skip_file(&path, exclude_extensions) {
+        if should_skip_file(path, exclude_extensions) {
             continue;
         }
 
         let rel_path = path.strip_prefix(directory).expect("should be able to strip prefix");
-        debug_log!(debug, "\nDebug: Processing file: {}", rel_path.display());
+        debug_log!(debug, "\nDebug: Processing file: {}", rel_path);
 
-        if is_zip_file(&path) {
-            if let Err(e) = check_zip_file(debug, &path, exclude_extensions, &mut db_files) {
+        if is_zip_file(path) {
+            if let Err(e) = check_zip_file(debug, path, exclude_extensions, &mut db_files) {
                 //continue to next file if we have an error
                 eprintln!("Failed to process ZIP file: {}", e);
             }
             continue;
         }
 
-        let path_str = path.to_str().expect("should have a unicode path");
+        let path_str = path.as_str();
         if let Some(scanned_file) = db_files.remove(path_str) {
             let hash_method = HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
-            match fs::File::open(&path)
+            match fs::File::open(path)
                 .context("Unable to open file")
                 .and_then(|mut file| read_and_hash(&mut file, hash_method))
             {
@@ -548,7 +561,7 @@ fn check_directory(db: &database::Database, directory: &PathBuf, debug: bool, ex
 
 fn check_zip_file(
     debug: bool,
-    zip_path: &Path,
+    zip_path: &Utf8Path,
     exclude_extensions: &[String],
     db_files: &mut BTreeMap<String, models::ScannedFile>,
 ) -> Result<()> {
@@ -561,16 +574,16 @@ fn check_zip_file(
             continue;
         }
 
-        if let Some(inner_path) = file.enclosed_name() {
-            if let Some(extension) = inner_path.extension().and_then(|n| n.to_str()) {
+        if let Some(inner_path) = file.enclosed_name().and_then(|p| Utf8PathBuf::try_from(p).ok()) {
+            if let Some(extension) = inner_path.extension() {
                 if exclude_extensions.contains(&extension.to_owned()) {
                     continue;
                 }
             }
 
-            debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path.display());
+            debug_log!(debug, "\nDebug: Processing zip entry: {}", inner_path);
             let file_path = zip_path.to_path_buf().join(inner_path);
-            let path_str = file_path.to_str().expect("should have a unicode path");
+            let path_str = file_path.as_str();
 
             if let Some(scanned_file) = db_files.remove(path_str) {
                 let hash_method =
@@ -622,22 +635,22 @@ fn print_scanned_file(hash: String, scanned_file: models::ScannedFile) {
 
 // common code
 
-fn should_skip_file(path: &Path, exclude_extensions: &[String]) -> bool {
+fn should_skip_file(path: &Utf8Path, exclude_extensions: &[String]) -> bool {
     // Skip directories and non-files
     if !path.is_file() {
         return true;
     }
 
-    if let Some(extension) = path.extension().and_then(|n| n.to_str()) {
+    if let Some(extension) = path.extension() {
         if exclude_extensions.contains(&extension.to_owned()) {
             return true;
         }
     } else {
-        // Skip files with strange extensions
+        // Skip files with missing extensions
         return true;
     }
 
-    if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+    if let Some(filename) = path.file_name() {
         // Skip hidden files
         if filename.starts_with('.') {
             return true;
@@ -647,12 +660,10 @@ fn should_skip_file(path: &Path, exclude_extensions: &[String]) -> bool {
         return true;
     }
 
-    let path = path.to_str();
-    // Skip files with strange paths
-    path.is_none()
+    false
 }
 
-fn is_zip_file(path: &Path) -> bool {
+fn is_zip_file(path: &Utf8Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
 }
 
@@ -776,7 +787,7 @@ fn handle_rom_matches(
     db: &database::Database,
     args: &ScanArgs,
     debug: bool,
-    full_file_path: &Path,
+    full_file_path: &Utf8Path,
     rel_path_str: &str,
     scanned_file: &mut models::ScannedFile,
     matches: &Matches,
@@ -820,20 +831,20 @@ fn handle_rom_matches(
         let (game_name, rom_name) = matches.partial.first().expect("should have a partial match");
         if can_rename && args.fix {
             let new_pathname = full_file_path.with_file_name(rom_name);
-            debug_log!(debug, "Renaming file from: {} to: {}", scanned_file.path, new_pathname.display());
+            debug_log!(debug, "Renaming file from: {} to: {}", scanned_file.path, new_pathname);
             if let Err(e) = fs::rename(&scanned_file.path, new_pathname) {
                 eprintln!("Failed to rename file: {}", e);
                 if args.file_display.contains(&DisplayMethod::Partial) {
                     println!("[NAME] {} {} (Expected: {} Game: {})", scanned_file.hash, rel_path_str, rom_name, game_name);
                 }
-    
+
                 update_scanned(scanned_file, "partial", game_name, rom_name);
                 db.store_file(scanned_file)?;
             } else {
                 if args.file_display.contains(&DisplayMethod::Exact) {
                     println!("[OK  ] {} {} (Game: {})", scanned_file.hash, rom_name, game_name);
                 }
-    
+
                 update_scanned(scanned_file, "exact", game_name, rom_name);
                 db.store_file(scanned_file)?;
             }
