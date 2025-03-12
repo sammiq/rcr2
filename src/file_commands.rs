@@ -881,7 +881,7 @@ fn print_exact_match(file_display: &[DisplayMethod], scanned_file: &ScannedFile,
 }
 
 fn print_partial_match(file_display: &[DisplayMethod], scanned_file: &ScannedFile, rel_file_path: &Utf8Path) {
-    if file_display.contains(&DisplayMethod::Exact) {
+    if file_display.contains(&DisplayMethod::Partial) {
         println!(
             "[NAME] {} {}\n------ Rom: {} Game: {}",
             scanned_file.hash,
