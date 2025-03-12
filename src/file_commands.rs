@@ -37,6 +37,7 @@ pub enum FileCommands {
         #[arg(short, long)]
         recursive: bool,
     },
+    /// List all files scanned into the database in the directory
     List {
         /// Directory to scan (defaults to current directory)
         #[arg(default_value = ".")]
