@@ -66,6 +66,7 @@ File Commands:
   scan    Scan all files in the directory and store the results in the database
   update  Update files in the database from the directory, checking for new, renamed and removed files
   check   Check all files in the directory against the database
+  list    List all files scanned into the database in the directory
   help    Print this message or the help of the given subcommand(s)
 
 Options:

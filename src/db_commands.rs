@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 
 use crate::{database, models, xml_parser};
 
@@ -11,13 +11,11 @@ pub enum DbCommands {
     /// Initialize the database
     Initialize {
         /// Path to the XML file to import
-        #[arg(short, long)]
         input: Utf8PathBuf,
     },
     /// Import data into the database
     Import {
         /// Path to the XML file to import
-        #[arg(short, long)]
         input: Utf8PathBuf,
     },
     /// Search the database
@@ -27,31 +25,33 @@ pub enum DbCommands {
     },
 }
 
+#[derive(ValueEnum, Clone)]
+pub enum SearchCriteria {
+    /// ROM name to search for (fuzzy search)
+    Name,
+    /// ROM CRC to search for (exact match)
+    Crc,
+    /// ROM MD5 to search for (exact match)
+    Md5,
+    /// ROM SHA1 to search for (exact match)
+    Sha1,
+}
+
 #[derive(Subcommand)]
 pub enum SearchType {
     /// Search by game name
     Game {
         /// Game name to search for (fuzzy search)
-        #[arg(short, long)]
         name: String,
     },
     /// Search for ROMs by various criteria
     Rom {
-        /// ROM name to search for (fuzzy search)
-        #[arg(short, long)]
-        name: Option<String>,
+        /// Search criteria to use
+        #[arg(short, long, default_value = "Name")]
+        mode: SearchCriteria,
 
-        /// ROM CRC to search for (exact match)
-        #[arg(short, long)]
-        crc: Option<String>,
-
-        /// ROM MD5 to search for (exact match)
-        #[arg(short, long)]
-        md5: Option<String>,
-
-        /// ROM SHA1 to search for (exact match)
-        #[arg(short, long)]
-        sha1: Option<String>,
+        /// Text to search for
+        text: String,
     },
 }
 
@@ -105,8 +105,8 @@ pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> 
                         }
                     }
                 }
-                SearchType::Rom { name, crc, md5, sha1 } => {
-                    search_roms(&db, name, crc, md5, sha1)?;
+                SearchType::Rom { mode, text } => {
+                    search_roms(&db, mode, text)?;
                 }
             }
         }
@@ -114,31 +114,24 @@ pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> 
     Ok(())
 }
 
-fn search_roms(
-    db: &database::Database,
-    name: &Option<String>,
-    crc: &Option<String>,
-    md5: &Option<String>,
-    sha1: &Option<String>,
-) -> Result<()> {
+fn search_roms(db: &database::Database, mode: &SearchCriteria, search_term: &str) -> Result<()> {
     let mut criteria = HashMap::new();
     let mut fuzzy_criteria = HashMap::new();
-    if let Some(name) = name {
-        //always fuzzy search by name
-        fuzzy_criteria.insert("name", name.as_str());
+    match mode {
+        SearchCriteria::Name => {
+            fuzzy_criteria.insert("name", search_term);
+        }
+        SearchCriteria::Crc => {
+            criteria.insert("crc", search_term);
+        }
+        SearchCriteria::Md5 => {
+            criteria.insert("md5", search_term);
+        }
+        SearchCriteria::Sha1 => {
+            criteria.insert("sha1", search_term);
+        }
     }
-    if let Some(crc) = crc {
-        criteria.insert("crc", crc.as_str());
-    }
-    if let Some(md5) = md5 {
-        criteria.insert("md5", md5.as_str());
-    }
-    if let Some(sha1) = sha1 {
-        criteria.insert("sha1", sha1.as_str());
-    }
-    if criteria.is_empty() && fuzzy_criteria.is_empty() {
-        return Err(anyhow!("Please provide at least one search criterion (name, crc, md5, or sha1)"));
-    }
+
     let results = db
         .search_roms(&criteria, &fuzzy_criteria)
         .context("Failed to search database")?;
