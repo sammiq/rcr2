@@ -1,8 +1,8 @@
-use crate::models::{DataFile, Game, Rom, ScannedFile};
+use crate::models::{DataFile, Game, HashType, MatchType, Rom, ScannedFile};
 use anyhow::{anyhow, Context, Result};
 use camino::Utf8Path;
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 macro_rules! debug_log {
     ($debug:expr, $($arg:tt)*) => {
@@ -84,8 +84,8 @@ impl Database {
                 file.base_path,
                 file.path,
                 file.hash,
-                file.hash_type,
-                file.match_type,
+                file.hash_type.to_string(),
+                file.match_type.to_string(),
                 file.game_name,
                 file.rom_name
             ],
@@ -218,12 +218,14 @@ impl Database {
              WHERE base_path = ?1",
         )?;
         let rows = stmt.query_map(params![base_path], |row| {
+            let raw_type: String = row.get(3)?;
+            let raw_match: String = row.get(4)?;
             Ok(ScannedFile {
                 base_path: row.get(0)?,
                 path: row.get(1)?,
                 hash: row.get(2)?,
-                hash_type: row.get(3)?,
-                match_type: row.get(4)?,
+                hash_type: HashType::from_str(&raw_type).expect("should be a valid HashType"),
+                match_type: MatchType::from_str(&raw_match).expect("should be a valid MatchType"),
                 game_name: row.get(5)?,
                 rom_name: row.get(6)?,
             })
@@ -242,12 +244,14 @@ impl Database {
              WHERE base_path LIKE ?1",
         )?;
         let rows = stmt.query_map(params![format!("{}%", base_path)], |row| {
+            let raw_type: String = row.get(3)?;
+            let raw_match: String = row.get(4)?;
             Ok(ScannedFile {
                 base_path: row.get(0)?,
                 path: row.get(1)?,
                 hash: row.get(2)?,
-                hash_type: row.get(3)?,
-                match_type: row.get(4)?,
+                hash_type: HashType::from_str(&raw_type).expect("should be a valid HashType"),
+                match_type: MatchType::from_str(&raw_match).expect("should be a valid MatchType"),
                 game_name: row.get(5)?,
                 rom_name: row.get(6)?,
             })

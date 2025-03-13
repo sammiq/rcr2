@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use camino::{Utf8DirEntry, Utf8Path, Utf8PathBuf};
+use clap::builder::PossibleValue;
 use clap::{Args, Subcommand, ValueEnum};
 use crc32fast::Hasher;
 use md5::Md5;
@@ -10,7 +11,7 @@ use std::io::Read;
 use strum::{Display, IntoStaticStr};
 use zip::ZipArchive;
 
-use crate::models::{Rom, ScannedFile};
+use crate::models::{HashType, MatchType, Rom, ScannedFile};
 use crate::{database, models};
 
 macro_rules! debug_log {
@@ -49,11 +50,25 @@ pub enum FileCommands {
     },
 }
 
+impl ValueEnum for HashType {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Crc, Self::Md5, Self::Sha1]
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(match self {
+            Self::Crc => PossibleValue::new("crc"),
+            Self::Md5 => PossibleValue::new("md5"),
+            Self::Sha1 => PossibleValue::new("sha1"),
+        })
+    }
+}
+
 #[derive(Args)]
 pub struct ScanArgs {
     /// Hash method to use
     #[arg(short, long, value_enum, default_value = "sha1")]
-    method: HashMethod,
+    method: HashType,
 
     /// Display method for files
     #[arg(long, value_enum, value_delimiter = ',', default_value = "exact,partial,miss")]
@@ -78,16 +93,6 @@ pub struct ScanArgs {
     /// Scan for files recursively
     #[arg(short, long)]
     recursive: bool,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, IntoStaticStr, Display)]
-enum HashMethod {
-    /// CRC32 hash
-    Crc,
-    /// MD5 hash
-    Md5,
-    /// SHA1 hash
-    Sha1,
 }
 
 #[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, ValueEnum, IntoStaticStr, Display)]
@@ -149,8 +154,7 @@ fn resolve_directory(directory: &Utf8PathBuf) -> Result<Utf8PathBuf> {
 // scan functions
 
 fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
-    let hash_method: &str = args.method.into();
-    debug_log!(debug, "Using hash type: {}", hash_method);
+    debug_log!(debug, "Using hash type: {}", args.method);
 
     let mut found_games: BTreeMap<String, GameStatus> = BTreeMap::new();
 
@@ -265,18 +269,16 @@ fn scan_file_contents(
 
     let filename = full_file_path.file_name().ok_or_else(|| anyhow!("Invalid file name"))?;
 
-    let hash_method: &str = args.method.into();
-
     let mut criteria = HashMap::new();
-    criteria.insert(hash_method, hash.as_str());
+    criteria.insert(args.method.into(), hash.as_str());
 
     let results = db.search_roms(&criteria, &HashMap::new())?;
     let mut scanned_file = models::ScannedFile {
         base_path: current_path.as_str().to_owned(), // base path is the current directory we are scanning
         path: full_file_path.as_str().to_owned(),    // full path is the full path to the file from file system root
         hash: hash.to_owned(),
-        hash_type: args.method.to_string(),
-        match_type: String::from("miss"),
+        hash_type: args.method,
+        match_type: MatchType::None,
         game_name: None,
         rom_name: None,
     };
@@ -297,8 +299,7 @@ fn scan_file_contents(
 // update functions
 
 fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
-    let hash_method: &str = args.method.into();
-    debug_log!(debug, "Using hash type: {}", hash_method);
+    debug_log!(debug, "Using hash type: {}", args.method);
 
     let mut dir_stack: Vec<Utf8PathBuf> = Vec::new();
     dir_stack.push(args.directory.clone());
@@ -475,7 +476,7 @@ fn update_found_file(
             .rom_name
             .as_ref()
             .expect("should have a rom name if there is a game name");
-        if scanned_file.match_type == "exact" {
+        if scanned_file.match_type == MatchType::Exact {
             game_status
                 .exact_matches
                 .entry(rom_name.to_owned())
@@ -547,11 +548,9 @@ fn check_directory(
             }
 
             if let Some(scanned_file) = db_files.remove(full_path.as_str()) {
-                let hash_method =
-                    HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
                 match fs::File::open(full_path)
                     .context("Unable to open file")
-                    .and_then(|mut file| read_and_hash(&mut file, hash_method))
+                    .and_then(|mut file| read_and_hash(&mut file, scanned_file.hash_type))
                 {
                     Ok(hash) => {
                         print_scanned_file(&hash, rel_file_path, &scanned_file);
@@ -602,9 +601,7 @@ fn check_zip_file(
             let rel_file_path = rel_zip_path.join(&inner_path);
 
             if let Some(scanned_file) = db_files.remove(file_path.as_str()) {
-                let hash_method =
-                    HashMethod::from_str(&scanned_file.hash_type, true).expect("should always be a valid hash method");
-                match read_and_hash(&mut file, hash_method) {
+                match read_and_hash(&mut file, scanned_file.hash_type) {
                     Ok(hash) => {
                         print_scanned_file(&hash, &rel_file_path, &scanned_file);
                     }
@@ -685,27 +682,27 @@ fn is_zip_file(path: &Utf8Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
 }
 
-fn read_and_hash(file: &mut impl Read, method: HashMethod) -> Result<String> {
+fn read_and_hash(file: &mut impl Read, method: HashType) -> Result<String> {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     calculate_hash(&buffer, method)
 }
 
-fn calculate_hash(data: &[u8], hash_type: HashMethod) -> Result<String> {
+fn calculate_hash(data: &[u8], hash_type: HashType) -> Result<String> {
     match hash_type {
-        HashMethod::Crc => {
+        HashType::Crc => {
             let mut hasher = Hasher::new();
             hasher.update(data);
             let checksum = hasher.finalize();
             Ok(format!("{:08x}", checksum))
         }
-        HashMethod::Md5 => {
+        HashType::Md5 => {
             let mut hasher = Md5::new();
             hasher.update(data);
             let result = hasher.finalize();
             Ok(format!("{:x}", result))
         }
-        HashMethod::Sha1 => {
+        HashType::Sha1 => {
             let mut hasher = Sha1::new();
             hasher.update(data);
             let result = hasher.finalize();
@@ -740,17 +737,17 @@ fn check_rom_matches(
                 debug_log!(debug, "  ROM: {}", rom.name);
                 debug_log!(debug, "  Size: {}", rom.size);
                 match args.method {
-                    HashMethod::Crc => {
+                    HashType::Crc => {
                         if let Some(h) = &rom.crc {
                             debug_log!(debug, "  CRC: {}", h);
                         }
                     }
-                    HashMethod::Md5 => {
+                    HashType::Md5 => {
                         if let Some(h) = &rom.md5 {
                             debug_log!(debug, "  MD5: {}", h);
                         }
                     }
-                    HashMethod::Sha1 => {
+                    HashType::Sha1 => {
                         if let Some(h) = &rom.sha1 {
                             debug_log!(debug, "  SHA1: {}", h);
                         }
@@ -815,7 +812,7 @@ fn handle_rom_matches(
 
     if !matches.exact.is_empty() {
         for (game_name, rom_name) in &matches.exact {
-            update_scanned(scanned_file, "exact", game_name, rom_name);
+            update_scanned(scanned_file, MatchType::Exact, game_name, rom_name);
             print_exact_match(&args.file_display, scanned_file, rel_file_path);
             db.store_file(scanned_file)?;
             //if this is set, don't bother with other exact matches, not very dependable
@@ -832,7 +829,7 @@ fn handle_rom_matches(
     if !matches.partial.is_empty() {
         if matches.partial.len() == 1 {
             let (game_name, rom_name) = matches.partial.first().expect("should have a partial match");
-            update_scanned(scanned_file, "partial", game_name, rom_name);
+            update_scanned(scanned_file, MatchType::Partial, game_name, rom_name);
 
             if can_rename && args.fix {
                 let new_pathname = full_file_path.with_file_name(rom_name);
@@ -842,7 +839,7 @@ fn handle_rom_matches(
                     print_partial_match(&args.file_display, scanned_file, rel_file_path);
                 } else {
                     //we renamed the file so we need to fix to file data
-                    scanned_file.match_type = "exact".to_owned();
+                    scanned_file.match_type = MatchType::Exact;
                     scanned_file.path = new_pathname.as_str().to_owned();
                     print_exact_match(&args.file_display, scanned_file, rel_file_path);
                 }
@@ -853,7 +850,7 @@ fn handle_rom_matches(
             db.store_file(scanned_file)?;
         } else {
             for (game_name, rom_name) in &matches.partial {
-                update_scanned(scanned_file, "partial", game_name, rom_name);
+                update_scanned(scanned_file, MatchType::Partial, game_name, rom_name);
                 db.store_file(scanned_file)?;
             }
 
@@ -892,8 +889,8 @@ fn print_partial_match(file_display: &[DisplayMethod], scanned_file: &ScannedFil
     }
 }
 
-fn update_scanned(scanned_file: &mut models::ScannedFile, match_type: &str, game_name: &str, rom_name: &str) {
-    scanned_file.match_type = match_type.to_owned();
+fn update_scanned(scanned_file: &mut models::ScannedFile, match_type: MatchType, game_name: &str, rom_name: &str) {
+    scanned_file.match_type = match_type;
     scanned_file.game_name = Some(game_name.to_owned());
     scanned_file.rom_name = Some(rom_name.to_owned());
 }
@@ -941,8 +938,8 @@ fn print_found_games(found_games: &BTreeMap<String, GameStatus>) {
 
 fn print_scanned_file(hash: &str, rel_file_path: &Utf8Path, scanned_file: &models::ScannedFile) {
     if hash == scanned_file.hash.as_str() {
-        match scanned_file.match_type.as_str() {
-            "exact" => {
+        match scanned_file.match_type {
+            MatchType::Exact => {
                 println!(
                     "[OK  ] {} {}\n------ Rom: {} Game: {}",
                     &scanned_file.hash,
@@ -951,7 +948,7 @@ fn print_scanned_file(hash: &str, rel_file_path: &Utf8Path, scanned_file: &model
                     &scanned_file.game_name.as_ref().expect("should have a game name")
                 );
             }
-            "partial" => {
+            MatchType::Partial => {
                 println!(
                     "[NAME] {} {}\n------ Rom: {} Game: {}",
                     &scanned_file.hash,
@@ -960,7 +957,7 @@ fn print_scanned_file(hash: &str, rel_file_path: &Utf8Path, scanned_file: &model
                     &scanned_file.game_name.as_ref().expect("should have a game name")
                 );
             }
-            _ => {
+            MatchType::None => {
                 println!("[MISS] {} {}", scanned_file.hash, rel_file_path);
             }
         }

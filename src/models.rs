@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use strum::{Display, EnumString, IntoStaticStr};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct DataFile {
@@ -38,14 +39,31 @@ pub struct Rom {
     pub sha1: Option<String>,
 }
 
+#[derive(Copy, Clone, Debug, Display, PartialEq, EnumString, IntoStaticStr)]
+pub enum MatchType {
+    Exact,
+    Partial,
+    None,
+}
+
+#[derive(Copy, Clone, Debug, Display, PartialEq, EnumString, IntoStaticStr)]
+pub enum HashType {
+    #[strum(ascii_case_insensitive)]
+    Crc,
+    #[strum(ascii_case_insensitive)]
+    Md5,
+    #[strum(ascii_case_insensitive)]
+    Sha1,
+}
+
 // Define the ScannedFile struct
 #[derive(Clone, Debug)]
 pub struct ScannedFile {
     pub base_path: String,
     pub path: String,
     pub hash: String,
-    pub hash_type: String,
-    pub match_type: String,
+    pub hash_type: HashType,
+    pub match_type: MatchType,
     pub game_name: Option<String>,
     pub rom_name: Option<String>,
 }
