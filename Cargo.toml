@@ -9,9 +9,9 @@ camino = "1.1.9"
 clap = { version = "4.5.31", features = ["derive"] }
 crc32fast = "1.4.2"
 md-5 = "0.10.6"
+quick-xml = { version = "0.37.2", features = ["serialize"] }
 rusqlite = "0.34.0"
 serde = { version = "1.0.219", features = ["derive"] }
-serde-xml-rs = "0.6.0"
 sha1 = "0.10.6"
 strum = { version = "0.27", features = ["derive"] }
 zip = "2.2.3"

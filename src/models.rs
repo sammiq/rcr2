@@ -17,7 +17,7 @@ pub struct Header {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Game {
-    //#[serde(attribute)]
+    #[serde(rename = "@name")]
     pub name: String,
     pub category: String,
     pub description: String,
@@ -27,15 +27,15 @@ pub struct Game {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Rom {
-    //#[serde(attribute)]
+    #[serde(rename = "@name")]
     pub name: String,
-    //#[serde(attribute)]
+    #[serde(rename = "@size")]
     pub size: i64,
-    //#[serde(attribute)]
+    #[serde(rename = "@crc")]
     pub crc: Option<String>,
-    //#[serde(attribute)]
+    #[serde(rename = "@md5")]
     pub md5: Option<String>,
-    //#[serde(attribute)]
+    #[serde(rename = "@sha1")]
     pub sha1: Option<String>,
 }
 
