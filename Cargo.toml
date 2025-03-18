@@ -5,13 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.97"
+bincode = { version = "2.0.1", features = ["serde"] }
 camino = "1.1.9"
 clap = { version = "4.5.32", features = ["derive"] }
 crc32fast = "1.4.2"
 md-5 = "0.10.6"
 quick-xml = { version = "0.37.2", features = ["serialize"] }
 rusqlite = "0.34.0"
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive", "rc"] }
 sha1 = "0.10.6"
 strum = { version = "0.27", features = ["derive"] }
 zip = "2.3.0"

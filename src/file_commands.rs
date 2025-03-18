@@ -6,13 +6,13 @@ use crc32fast::Hasher;
 use md5::Md5;
 use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
-use std::io::Read;
+use std::{fs, io};
+use std::io::{BufReader, Read};
 use strum::{Display, IntoStaticStr};
 use zip::ZipArchive;
 
-use crate::models::{HashType, MatchType, Rom, ScannedFile};
-use crate::{database, models};
+use crate::models::{HashType, MatchType, Rom, ScannedFile, Search, Store};
+use crate::{cache, database, models};
 
 macro_rules! debug_log {
     ($debug:expr, $($arg:tt)*) => {
@@ -20,6 +20,11 @@ macro_rules! debug_log {
             eprintln!("{}", format!("Debug: {}", format!($($arg)*)));
         }
     };
+}
+
+pub enum StorageType {
+    Database(database::Database),
+    Cache(cache::Cache),
 }
 
 #[derive(Subcommand)]
@@ -113,30 +118,39 @@ struct GameStatus {
 }
 
 pub fn handle_command(
-    db: &mut database::Database,
+    storage: &mut StorageType,
     debug: bool,
     command: &mut FileCommands,
     exclude_extensions: &[String],
 ) -> Result<()> {
-    match command {
-        FileCommands::Scan(args) => {
-            args.directory = resolve_directory(&args.directory)?;
-            scan_directory(db, args, debug, exclude_extensions).context("Failed to scan directory")?;
-        }
-        FileCommands::Update(args) => {
-            args.directory = resolve_directory(&args.directory)?;
-            update_directory(db, args, debug, exclude_extensions).context("Failed to update directory")?;
-        }
-        FileCommands::Check { directory, recursive } => {
-            let directory = resolve_directory(directory)?;
-            check_directory(db, debug, exclude_extensions, &directory, *recursive).context("Failed to check directory")?;
-        }
-        FileCommands::List { directory, recursive } => {
-            let directory = resolve_directory(directory)?;
-            list_directory(db, &directory, debug, exclude_extensions, *recursive).context("Failed to list directory")?;
-        }
+    match storage {
+        StorageType::Database(db) => match command {
+            FileCommands::Scan(args) => {
+                args.directory = resolve_directory(&args.directory)?;
+                scan_directory(db, args, debug, exclude_extensions).context("Failed to scan directory")
+            }
+            FileCommands::Update(args) => {
+                args.directory = resolve_directory(&args.directory)?;
+                update_directory(db, args, debug, exclude_extensions).context("Failed to update directory")
+            }
+            FileCommands::Check { directory, recursive } => {
+                let directory = resolve_directory(directory)?;
+                check_directory(db, debug, exclude_extensions, &directory, *recursive).context("Failed to check directory")
+            }
+            FileCommands::List { directory, recursive } => {
+                let directory = resolve_directory(directory)?;
+                list_directory(db, &directory, debug, exclude_extensions, *recursive).context("Failed to list directory")
+            }
+        },
+        StorageType::Cache(cache) => match command {
+            FileCommands::Scan(args) => {
+                args.directory = resolve_directory(&args.directory)?;
+                cache.build_hash_index(args.method);
+                scan_directory(cache, args, debug, exclude_extensions).context("Failed to scan directory")
+            }
+            _ => Err(anyhow!("Cache storage not supported for file commands")),
+        },
     }
-    Ok(())
 }
 
 fn resolve_directory(directory: &Utf8PathBuf) -> Result<Utf8PathBuf> {
@@ -153,7 +167,7 @@ fn resolve_directory(directory: &Utf8PathBuf) -> Result<Utf8PathBuf> {
 
 // scan functions
 
-fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
+fn scan_directory<S: Store + Search>(cache: &mut S, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
     debug_log!(debug, "Using hash type: {}", args.method);
 
     let mut found_games: BTreeMap<String, GameStatus> = BTreeMap::new();
@@ -169,7 +183,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
         entries.sort_by_key(|entry| entry.path().to_owned());
 
         //before we start scanning the directory, we need to clear the database of any files that have the same base path
-        db.clear_files_by_base_path(current_path.as_str())?;
+        cache.clear_files_by_base_path(current_path.as_str())?;
 
         for entry in entries {
             let full_path = entry.path();
@@ -192,7 +206,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
 
             if is_zip_file(full_path) {
                 if let Err(e) =
-                    scan_zip_contents(db, args, debug, &current_path, full_path, rel_path, exclude_extensions, &mut found_games)
+                    scan_zip_contents(cache, args, debug, &current_path, full_path, rel_path, exclude_extensions, &mut found_games)
                 {
                     //continue to next file if we have an error
                     eprintln!("Failed to process ZIP file: {}", e);
@@ -201,7 +215,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
             }
 
             if let Err(e) = fs::File::open(full_path).context("Unable to open file").and_then(|mut file| {
-                scan_file_contents(db, args, debug, &current_path, full_path, rel_path, &mut file, &mut found_games, true)
+                scan_file_contents(cache, args, debug, &current_path, full_path, rel_path, &mut file, &mut found_games, true)
             }) {
                 //continue to next file if we have an error
                 eprintln!("Failed to process file: {}", e);
@@ -214,8 +228,8 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
     Ok(())
 }
 
-fn scan_zip_contents(
-    db: &database::Database,
+fn scan_zip_contents<S: Store + Search>(
+    cache: &mut S,
     args: &ScanArgs,
     debug: bool,
     current_path: &Utf8Path,
@@ -243,7 +257,7 @@ fn scan_zip_contents(
             let full_file_path = zip_path.join(&inner_path);
             let rel_file_path = rel_zip_path.join(&inner_path);
             if let Err(e) =
-                scan_file_contents(db, args, debug, current_path, &full_file_path, &rel_file_path, &mut file, found_games, false)
+                scan_file_contents(cache, args, debug, current_path, &full_file_path, &rel_file_path, &mut file, found_games, false)
             {
                 //continue to next file if we have an error
                 eprintln!("Failed to process file: {}", e);
@@ -253,8 +267,8 @@ fn scan_zip_contents(
     Ok(())
 }
 
-fn scan_file_contents(
-    db: &database::Database,
+fn scan_file_contents<S: Store + Search>(
+    cache: &mut S,
     args: &ScanArgs,
     debug: bool,
     current_path: &Utf8Path,
@@ -269,10 +283,7 @@ fn scan_file_contents(
 
     let filename = full_file_path.file_name().ok_or_else(|| anyhow!("Invalid file name"))?;
 
-    let mut criteria = HashMap::new();
-    criteria.insert(args.method.into(), hash.as_str());
-
-    let results = db.search_roms(&criteria, &HashMap::new())?;
+    let results = cache.search_by_hash(args.method, &hash)?;
     let mut scanned_file = models::ScannedFile {
         base_path: current_path.as_str().to_owned(), // base path is the current directory we are scanning
         path: full_file_path.as_str().to_owned(),    // full path is the full path to the file from file system root
@@ -287,18 +298,18 @@ fn scan_file_contents(
         if args.file_display.contains(&DisplayMethod::Miss) {
             println!("[MISS] {} {}", hash, rel_file_path);
         }
-        db.store_file(&scanned_file)?;
+        cache.store_file(&scanned_file)?;
     } else {
         debug_log!(debug, "Found {} matching entries in database", results.len());
-        let matches = check_rom_matches(db, args, debug, rel_file_path, filename, &results, found_games)?;
-        handle_rom_matches(db, args, debug, full_file_path, rel_file_path, &mut scanned_file, &matches, can_rename)?;
+        let matches = check_rom_matches(cache, args, debug, rel_file_path, filename, &results, found_games)?;
+        handle_rom_matches(cache, args, debug, full_file_path, rel_file_path, &mut scanned_file, &matches, can_rename)?;
     }
     Ok(hash)
 }
 
 // update functions
 
-fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
+fn update_directory(db: &mut database::Database, args: &ScanArgs, debug: bool, exclude_extensions: &[String]) -> Result<()> {
     debug_log!(debug, "Using hash type: {}", args.method);
 
     let mut dir_stack: Vec<Utf8PathBuf> = Vec::new();
@@ -409,7 +420,7 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
 }
 
 fn update_zip_contents(
-    db: &database::Database,
+    db: &mut database::Database,
     args: &ScanArgs,
     debug: bool,
     current_path: &Utf8Path,
@@ -683,28 +694,33 @@ fn is_zip_file(path: &Utf8Path) -> bool {
 }
 
 fn read_and_hash(file: &mut impl Read, method: HashType) -> Result<String> {
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    calculate_hash(&buffer, method)
-}
-
-fn calculate_hash(data: &[u8], hash_type: HashType) -> Result<String> {
-    match hash_type {
+    match method {
         HashType::Crc => {
+            //CRC does not implement Write, so we need to do it manually
             let mut hasher = Hasher::new();
-            hasher.update(data);
+            let mut reader = BufReader::new(file);
+            let mut buffer = [0u8; 8192];
+            //loop and read date into buffer and update the hasher
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+
             let checksum = hasher.finalize();
             Ok(format!("{:08x}", checksum))
         }
         HashType::Md5 => {
             let mut hasher = Md5::new();
-            hasher.update(data);
+            io::copy(file, &mut hasher)?;
             let result = hasher.finalize();
             Ok(format!("{:x}", result))
         }
         HashType::Sha1 => {
             let mut hasher = Sha1::new();
-            hasher.update(data);
+            io::copy(file, &mut hasher)?;
             let result = hasher.finalize();
             Ok(format!("{:x}", result))
         }
@@ -716,8 +732,8 @@ struct Matches {
     partial: Vec<(String, String)>,
 }
 
-fn check_rom_matches(
-    db: &database::Database,
+fn check_rom_matches<S: Search>(
+    searcher: &S,
     args: &ScanArgs,
     debug: bool,
     rel_file_path: &Utf8Path,
@@ -729,7 +745,7 @@ fn check_rom_matches(
     let mut partial_matches = Vec::new();
 
     for (game, roms) in results {
-        let game_status = get_game_status(db, found_games, &game.name);
+        let game_status = get_game_status(searcher, found_games, &game.name);
         for rom in roms {
             if debug {
                 debug_log!(debug, "Comparing with database entry:");
@@ -780,14 +796,14 @@ fn check_rom_matches(
     })
 }
 
-fn get_game_status<'a>(
-    db: &database::Database,
+fn get_game_status<'a, S: Search>(
+    searcher: &S,
     game_status: &'a mut BTreeMap<String, GameStatus>,
     game_name: &str,
 ) -> &'a mut GameStatus {
     game_status.entry(game_name.to_owned()).or_insert_with(|| {
-        let games = db
-            .search_by_game_name(game_name, false)
+        let games = searcher
+            .search_by_game_name(game_name)
             .expect("Game could not be found in database");
         let game = games.first().expect("Game could not be found in database");
         GameStatus {
@@ -798,8 +814,8 @@ fn get_game_status<'a>(
     })
 }
 
-fn handle_rom_matches(
-    db: &database::Database,
+fn handle_rom_matches<S: Store>(
+    storage: &mut S,
     args: &ScanArgs,
     debug: bool,
     full_file_path: &Utf8Path,
@@ -814,7 +830,7 @@ fn handle_rom_matches(
         for (game_name, rom_name) in &matches.exact {
             update_scanned(scanned_file, MatchType::Exact, game_name, rom_name);
             print_exact_match(&args.file_display, scanned_file, rel_file_path);
-            db.store_file(scanned_file)?;
+            storage.store_file(scanned_file)?;
             //if this is set, don't bother with other exact matches, not very dependable
             if args.first_match {
                 return Ok(());
@@ -847,11 +863,11 @@ fn handle_rom_matches(
                 print_partial_match(&args.file_display, scanned_file, rel_file_path);
             }
 
-            db.store_file(scanned_file)?;
+            storage.store_file(scanned_file)?;
         } else {
             for (game_name, rom_name) in &matches.partial {
                 update_scanned(scanned_file, MatchType::Partial, game_name, rom_name);
-                db.store_file(scanned_file)?;
+                storage.store_file(scanned_file)?;
             }
 
             if args.file_display.contains(&DisplayMethod::Partial) {

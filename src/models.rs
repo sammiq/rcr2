@@ -1,4 +1,5 @@
-use serde::Deserialize;
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -15,7 +16,7 @@ pub struct Header {
     pub version: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Game {
     #[serde(rename = "@name")]
     pub name: String,
@@ -25,7 +26,7 @@ pub struct Game {
     pub roms: Vec<Rom>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Rom {
     #[serde(rename = "@name")]
     pub name: String,
@@ -39,14 +40,14 @@ pub struct Rom {
     pub sha1: Option<String>,
 }
 
-#[derive(Copy, Clone, Debug, Display, PartialEq, EnumString, IntoStaticStr)]
+#[derive(Copy, Clone, Debug, Display, PartialEq, EnumString, IntoStaticStr, Deserialize, Serialize)]
 pub enum MatchType {
     Exact,
     Partial,
     None,
 }
 
-#[derive(Copy, Clone, Debug, Display, PartialEq, EnumString, IntoStaticStr)]
+#[derive(Copy, Clone, Debug, Display, PartialEq, EnumString, IntoStaticStr, Deserialize, Serialize)]
 pub enum HashType {
     #[strum(ascii_case_insensitive)]
     Crc,
@@ -57,7 +58,7 @@ pub enum HashType {
 }
 
 // Define the ScannedFile struct
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ScannedFile {
     pub base_path: String,
     pub path: String,
@@ -66,4 +67,16 @@ pub struct ScannedFile {
     pub match_type: MatchType,
     pub game_name: Option<String>,
     pub rom_name: Option<String>,
+}
+
+//should this be here?
+
+pub trait Store {
+    fn clear_files_by_base_path(&mut self, base_path: &str) -> Result<()>;
+    fn store_file(&mut self, file: &ScannedFile) -> Result<()>;
+}
+
+pub trait Search {
+    fn search_by_game_name(&self, name: &str) -> Result<Vec<Game>>;
+    fn search_by_hash(&self, hash_type: HashType, hash: &str) -> Result<Vec<(Game, Vec<Rom>)>>;
 }

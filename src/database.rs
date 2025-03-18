@@ -1,4 +1,4 @@
-use crate::models::{DataFile, Game, HashType, MatchType, Rom, ScannedFile};
+use crate::models::{DataFile, Game, HashType, MatchType, Rom, ScannedFile, Search, Store};
 use anyhow::{anyhow, Context, Result};
 use camino::Utf8Path;
 use rusqlite::{params, Connection};
@@ -76,7 +76,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn store_file(&self, file: &ScannedFile) -> Result<()> {
+    pub fn store_file(&mut self, file: &ScannedFile) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO scanned_files (base_path, path, hash, hash_type, match_type, game_name, rom_name)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -146,22 +146,17 @@ impl Database {
         })
     }
 
-    pub fn search_roms(
-        &self,
-        criteria: &HashMap<&str, &str>,
-        fuzzy_criteria: &HashMap<&str, &str>,
-    ) -> Result<Vec<(Game, Vec<Rom>)>> {
+    pub fn search_roms(&self, criteria: (&str, &str, bool)) -> Result<Vec<(Game, Vec<Rom>)>> {
         let mut conditions = Vec::new();
         let mut params: Vec<String> = Vec::new();
 
-        for (key, value) in criteria {
-            conditions.push(format!("r.{} = ?", key));
-            params.push(String::from(*value));
-        }
-
-        for (key, value) in fuzzy_criteria {
+        let (key, value, fuzzy) = criteria;
+        if fuzzy {
             conditions.push(format!("r.{} LIKE ?", key));
             params.push(format!("%{}%", value));
+        } else {
+            conditions.push(format!("r.{} = ?", key));
+            params.push(String::from(value));
         }
 
         let query = format!(
@@ -209,6 +204,14 @@ impl Database {
 
         let results: Vec<_> = games_map.into_values().collect();
         Ok(results)
+    }
+
+    pub fn search_by_hash(&self, hash_type: HashType, hash: &str) -> Result<Vec<(Game, Vec<Rom>)>> {
+        match hash_type {
+            HashType::Crc => self.search_roms(("crc", hash, false)),
+            HashType::Md5 => self.search_roms(("md5", hash, false)),
+            HashType::Sha1 => self.search_roms(("sha1", hash, false)),
+        }
     }
 
     pub fn get_files_by_base_path(&self, base_path: &str) -> Result<Vec<ScannedFile>> {
@@ -263,14 +266,34 @@ impl Database {
         Ok(scanned_files)
     }
 
-    pub fn clear_files_by_base_path(&self, base_path: &str) -> Result<()> {
+    pub fn clear_files_by_base_path(&mut self, base_path: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM scanned_files WHERE base_path = ?1", [base_path])?;
         Ok(())
     }
 
-    pub fn delete_file(&self, path: &str) -> Result<()> {
+    pub fn delete_file(&mut self, path: &str) -> Result<()> {
         self.conn.execute("DELETE FROM scanned_files WHERE path = ?1", [path])?;
         Ok(())
+    }
+}
+
+impl Store for Database {
+    fn clear_files_by_base_path(&mut self, base_path: &str) -> Result<()> {
+        self.clear_files_by_base_path(base_path)
+    }
+
+    fn store_file(&mut self, file: &ScannedFile) -> Result<()> {
+        self.store_file(file)
+    }
+}
+
+impl Search for Database {
+    fn search_by_game_name(&self, name: &str) -> Result<Vec<Game>> {
+        self.search_by_game_name(name, false)
+    }
+
+    fn search_by_hash(&self, hash_type: HashType, hash: &str) -> Result<Vec<(Game, Vec<Rom>)>> {
+        self.search_by_hash(hash_type, hash)
     }
 }

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Subcommand, ValueEnum};
@@ -115,34 +113,16 @@ pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> 
 }
 
 fn search_roms(db: &database::Database, mode: &SearchCriteria, search_term: &str) -> Result<()> {
-    let mut criteria = HashMap::new();
-    let mut fuzzy_criteria = HashMap::new();
-    match mode {
-        SearchCriteria::Name => {
-            fuzzy_criteria.insert("name", search_term);
-        }
-        SearchCriteria::Crc => {
-            criteria.insert("crc", search_term);
-        }
-        SearchCriteria::Md5 => {
-            criteria.insert("md5", search_term);
-        }
-        SearchCriteria::Sha1 => {
-            criteria.insert("sha1", search_term);
-        }
-    }
+    let criteria = match mode {
+        SearchCriteria::Name => ("name", search_term, true),
+        SearchCriteria::Crc => ("crc", search_term, false),
+        SearchCriteria::Md5 => ("md5", search_term, false),
+        SearchCriteria::Sha1 => ("sha1", search_term, false),
+    };
 
-    let results = db
-        .search_roms(&criteria, &fuzzy_criteria)
-        .context("Failed to search database")?;
+    let results = db.search_roms(criteria).context("Failed to search database")?;
     if results.is_empty() {
-        let args = criteria
-            .iter()
-            .chain(&fuzzy_criteria)
-            .map(|(k, v)| format!("{k}: {v}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("No ROMs found matching criteria: {}", args);
+        println!("No ROMs found matching criteria: {:?}", criteria);
     } else {
         println!("Found {} matching game(s)", results.len());
         for (game, roms) in results {
