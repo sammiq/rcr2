@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::{Subcommand, ValueEnum};
+use clap::Subcommand;
 
 use crate::{database, models, xml_parser};
 
@@ -25,18 +25,6 @@ pub enum DbCommands {
     },
 }
 
-#[derive(ValueEnum, Clone)]
-pub enum SearchCriteria {
-    /// ROM name to search for (fuzzy search)
-    Name,
-    /// ROM CRC to search for (exact match)
-    Crc,
-    /// ROM MD5 to search for (exact match)
-    Md5,
-    /// ROM SHA1 to search for (exact match)
-    Sha1,
-}
-
 #[derive(Subcommand)]
 pub enum SearchType {
     /// Search by game name
@@ -46,12 +34,20 @@ pub enum SearchType {
     },
     /// Search for ROMs by various criteria
     Rom {
-        /// Search criteria to use
-        #[arg(short, long, default_value = "Name")]
-        mode: SearchCriteria,
+        /// ROM name to search for (fuzzy search)
+        name: Option<String>,
 
-        /// Text to search for
-        text: String,
+        /// CRC to search for (exact match)
+        #[arg(short, long)]
+        crc: Option<String>,
+
+        /// MD5 to search for (exact match)
+        #[arg(short, long)]
+        md5: Option<String>,
+
+        /// SHA1 to search for (exact match)
+        #[arg(short, long)]
+        sha1: Option<String>,
     },
 }
 
@@ -105,8 +101,8 @@ pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> 
                         }
                     }
                 }
-                SearchType::Rom { mode, text } => {
-                    search_roms(&db, mode, text)?;
+                SearchType::Rom { name, crc, md5, sha1 } => {
+                    search_roms(&db, name, crc, md5, sha1)?;
                 }
             }
         }
@@ -114,40 +110,48 @@ pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> 
     Ok(())
 }
 
-fn search_roms(db: &database::Database, mode: &SearchCriteria, search_term: &str) -> Result<()> {
+fn search_roms(
+    db: &database::Database,
+    name: &Option<String>,
+    crc: &Option<String>,
+    md5: &Option<String>,
+    sha1: &Option<String>,
+) -> Result<()> {
     let mut criteria = HashMap::new();
     let mut fuzzy_criteria = HashMap::new();
-    match mode {
-        SearchCriteria::Name => {
-            fuzzy_criteria.insert("name", search_term);
-        }
-        SearchCriteria::Crc => {
-            criteria.insert("crc", search_term);
-        }
-        SearchCriteria::Md5 => {
-            criteria.insert("md5", search_term);
-        }
-        SearchCriteria::Sha1 => {
-            criteria.insert("sha1", search_term);
-        }
+    if let Some(name) = name {
+        fuzzy_criteria.insert("name", name.as_str());
+    }
+    if let Some(crc) = crc {
+        criteria.insert("crc", crc.as_str());
+    }
+    if let Some(md5) = md5 {
+        criteria.insert("md5", md5.as_str());
+    }
+    if let Some(sha1) = sha1 {
+        criteria.insert("sha1", sha1.as_str());
     }
 
-    let results = db
-        .search_roms(&criteria, &fuzzy_criteria)
-        .context("Failed to search database")?;
-    if results.is_empty() {
-        let args = criteria
-            .iter()
-            .chain(&fuzzy_criteria)
-            .map(|(k, v)| format!("{k}: {v}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("No ROMs found matching criteria: {}", args);
+    if criteria.is_empty() {
+        Err(anyhow!("No criteria given on command line, please supply at least one search term"))
     } else {
-        println!("Found {} matching game(s)", results.len());
-        for (game, roms) in results {
-            print_game_with_roms(&game, &roms);
+        let results = db
+            .search_roms(&criteria, &fuzzy_criteria)
+            .context("Failed to search database")?;
+        if results.is_empty() {
+            let args = criteria
+                .iter()
+                .chain(&fuzzy_criteria)
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("No ROMs found matching criteria: {}", args);
+        } else {
+            println!("Found {} matching game(s)", results.len());
+            for (game, roms) in results {
+                print_game_with_roms(&game, &roms);
+            }
         }
+        Ok(())
     }
-    Ok(())
 }
