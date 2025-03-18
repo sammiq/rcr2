@@ -6,8 +6,8 @@ use crc32fast::Hasher;
 use md5::Md5;
 use sha1::{Digest, Sha1};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
-use std::io::Read;
+use std::fs::File;
+use std::io::{BufReader, Read};
 use strum::{Display, IntoStaticStr};
 use zip::ZipArchive;
 
@@ -200,7 +200,7 @@ fn scan_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclude
                 continue;
             }
 
-            if let Err(e) = fs::File::open(full_path).context("Unable to open file").and_then(|mut file| {
+            if let Err(e) = File::open(full_path).context("Unable to open file").and_then(|mut file| {
                 scan_file_contents(db, args, debug, &current_path, full_path, rel_path, &mut file, &mut found_games, true)
             }) {
                 //continue to next file if we have an error
@@ -224,7 +224,7 @@ fn scan_zip_contents(
     exclude_extensions: &[String],
     found_games: &mut BTreeMap<String, GameStatus>,
 ) -> Result<()> {
-    let zip_file = fs::File::open(zip_path)?;
+    let zip_file = File::open(zip_path)?;
     let mut archive = ZipArchive::new(zip_file)?;
 
     for i in 0..archive.len() {
@@ -367,7 +367,7 @@ fn update_directory(db: &database::Database, args: &ScanArgs, debug: bool, exclu
                 //just treat the database as correct, and add it to the game status without recalculating the hash
                 update_found_file(db, rel_file_path, &scanned_file, &mut found_games);
             } else {
-                match fs::File::open(full_path).context("Unable to open file").and_then(|mut file| {
+                match File::open(full_path).context("Unable to open file").and_then(|mut file| {
                     scan_file_contents(db, args, debug, &current_path, full_path, rel_file_path, &mut file, &mut found_games, true)
                 }) {
                     Ok(hash) => {
@@ -420,7 +420,7 @@ fn update_zip_contents(
     hash_to_file: &mut BTreeMap<String, HashSet<String>>,
     found_games: &mut BTreeMap<String, GameStatus>,
 ) -> Result<()> {
-    let file = fs::File::open(zip_path)?;
+    let file = File::open(zip_path)?;
     let mut archive = ZipArchive::new(file)?;
 
     for i in 0..archive.len() {
@@ -548,7 +548,7 @@ fn check_directory(
             }
 
             if let Some(scanned_file) = db_files.remove(full_path.as_str()) {
-                match fs::File::open(full_path)
+                match File::open(full_path)
                     .context("Unable to open file")
                     .and_then(|mut file| read_and_hash(&mut file, scanned_file.hash_type))
                 {
@@ -580,7 +580,7 @@ fn check_zip_file(
     exclude_extensions: &[String],
     db_files: &mut BTreeMap<String, models::ScannedFile>,
 ) -> Result<()> {
-    let zip_file = fs::File::open(full_zip_path)?;
+    let zip_file = File::open(full_zip_path)?;
     let mut archive = ZipArchive::new(zip_file)?;
 
     for i in 0..archive.len() {
@@ -683,28 +683,33 @@ fn is_zip_file(path: &Utf8Path) -> bool {
 }
 
 fn read_and_hash(file: &mut impl Read, method: HashType) -> Result<String> {
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    calculate_hash(&buffer, method)
-}
-
-fn calculate_hash(data: &[u8], hash_type: HashType) -> Result<String> {
-    match hash_type {
+    match method {
         HashType::Crc => {
+            //CRC does not implement Write, so we need to do it manually
             let mut hasher = Hasher::new();
-            hasher.update(data);
+            let mut reader = BufReader::new(file);
+            let mut buffer = [0u8; 8192];
+            //loop and read date into buffer and update the hasher
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+
             let checksum = hasher.finalize();
             Ok(format!("{:08x}", checksum))
         }
         HashType::Md5 => {
             let mut hasher = Md5::new();
-            hasher.update(data);
+            std::io::copy(file, &mut hasher)?;
             let result = hasher.finalize();
             Ok(format!("{:x}", result))
         }
         HashType::Sha1 => {
             let mut hasher = Sha1::new();
-            hasher.update(data);
+            std::io::copy(file, &mut hasher)?;
             let result = hasher.finalize();
             Ok(format!("{:x}", result))
         }
@@ -834,7 +839,7 @@ fn handle_rom_matches(
             if can_rename && args.fix {
                 let new_pathname = full_file_path.with_file_name(rom_name);
                 debug_log!(debug, "Renaming file from: {} to: {}", scanned_file.path, new_pathname);
-                if let Err(e) = fs::rename(&scanned_file.path, &new_pathname) {
+                if let Err(e) = std::fs::rename(&scanned_file.path, &new_pathname) {
                     eprintln!("Failed to rename file: {}", e);
                     print_partial_match(&args.file_display, scanned_file, rel_file_path);
                 } else {
