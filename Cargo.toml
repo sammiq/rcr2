@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.97"
 camino = "1.1.9"
-clap = { version = "4.5.32", features = ["derive"] }
+clap = { version = "4.5.34", features = ["derive"] }
 crc32fast = "1.4.2"
 md-5 = "0.10.6"
 quick-xml = { version = "0.37.2", features = ["serialize"] }
