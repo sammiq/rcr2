@@ -9,7 +9,7 @@ camino = "1.1.9"
 clap = { version = "4.5.34", features = ["derive"] }
 crc32fast = "1.4.2"
 md-5 = "0.10.6"
-quick-xml = { version = "0.37.2", features = ["serialize"] }
+quick-xml = { version = "0.37.3", features = ["serialize"] }
 rusqlite = "0.34.0"
 serde = { version = "1.0.219", features = ["derive"] }
 sha1 = "0.10.6"
