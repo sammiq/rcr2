@@ -38,7 +38,6 @@ impl Database {
         tx.execute(
             "CREATE TABLE IF NOT EXISTS games (
                 name TEXT PRIMARY KEY,
-                category TEXT NOT NULL,
                 description TEXT NOT NULL
             )",
             [],
@@ -98,9 +97,9 @@ impl Database {
 
         for game in data.games {
             tx.execute(
-                "INSERT OR REPLACE INTO games (name, category, description) 
-                 VALUES (?1, ?2, ?3)",
-                params![game.name, game.category, game.description],
+                "INSERT OR REPLACE INTO games (name, description) 
+                 VALUES (?1, ?2)",
+                params![game.name, game.description],
             )?;
 
             // Delete existing ROMs for this game
@@ -121,7 +120,7 @@ impl Database {
     }
 
     pub fn search_by_game_name(&self, name: &str, fuzzy: bool) -> Result<Vec<Game>> {
-        let query = "SELECT g.name, g.category, g.description, r.name, r.size, r.crc, r.md5, r.sha1
+        let query = "SELECT g.name, g.description, r.name, r.size, r.crc, r.md5, r.sha1
              FROM games g
              JOIN roms r ON g.name = r.game_name";
 
@@ -165,7 +164,7 @@ impl Database {
         }
 
         let query = format!(
-            "SELECT g.name, g.category, g.description, r.name, r.size, r.crc, r.md5, r.sha1
+            "SELECT g.name, g.description, r.name, r.size, r.crc, r.md5, r.sha1
              FROM games g
              JOIN roms r ON g.name = r.game_name
              WHERE {}
@@ -182,16 +181,15 @@ impl Database {
             Ok((
                 Game {
                     name: row.get(0)?,
-                    category: row.get(1)?,
-                    description: row.get(2)?,
+                    description: row.get(1)?,
                     roms: vec![],
                 },
                 Rom {
-                    name: row.get(3)?,
-                    size: row.get(4)?,
-                    crc: row.get(5)?,
-                    md5: row.get(6)?,
-                    sha1: row.get(7)?,
+                    name: row.get(2)?,
+                    size: row.get(3)?,
+                    crc: row.get(4)?,
+                    md5: row.get(5)?,
+                    sha1: row.get(6)?,
                 },
             ))
         })?;

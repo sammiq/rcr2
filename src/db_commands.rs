@@ -54,7 +54,6 @@ pub enum SearchType {
 fn print_game_with_roms(game: &models::Game, roms: &[models::Rom]) {
     println!("\nGame:");
     println!("Name: {}", game.name);
-    println!("Category: {}", game.category);
     //    println!("Description: {}", game.description);
     println!("ROMs:");
     for rom in roms {
