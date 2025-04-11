@@ -19,7 +19,6 @@ pub struct Header {
 pub struct Game {
     #[serde(rename = "@name")]
     pub name: String,
-    pub category: String,
     pub description: String,
     #[serde(rename = "rom")]
     pub roms: Vec<Rom>,
