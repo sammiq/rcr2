@@ -151,7 +151,7 @@ fn remap_datafile(data: &mut models::DataFile, remap_extensions: &HashMap<String
             } else {
                 if let Some(extension) = before.and(after) {
                     if let Some(new_extension) = remap_extensions.get(extension) {
-                        rom.name = format!("{}.{}", new_extension, after.unwrap());
+                        rom.name = format!("{}.{}", before.unwrap(), new_extension);
                     }
                 }
             }
