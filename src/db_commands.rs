@@ -143,9 +143,16 @@ pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> 
 fn remap_datafile(data: &mut models::DataFile, remap_extensions: &HashMap<String, String>) -> Result<()> {
     for game in &mut data.games {
         for rom in &mut game.roms {
-            if let Some(extension) = rom.name.rsplit('.').next() {
-                if let Some(new_extension) = remap_extensions.get(extension) {
-                    rom.name = format!("{}{}", rom.name.trim_end_matches(extension), new_extension);
+            let mut iter = rom.name.rsplitn(2, '.');
+            let after = iter.next();
+            let before = iter.next();
+            if before == Some("") {
+                continue;
+            } else {
+                if let Some(extension) = before.and(after) {
+                    if let Some(new_extension) = remap_extensions.get(extension) {
+                        rom.name = format!("{}.{}", new_extension, after.unwrap());
+                    }
                 }
             }
         }
