@@ -12,11 +12,21 @@ pub enum DbCommands {
     Initialize {
         /// Path to the XML file to import
         input: Utf8PathBuf,
+
+        /// List of remappings for file extensions, comma separated
+        /// e.g. "3ds=cci,bin=nes"
+        #[arg(short, long, value_delimiter = ',', value_parser = parse_key_val::<String, String>)]
+        remap_extensions: Vec<(String, String)>,
     },
     /// Import data into the database
     Import {
         /// Path to the XML file to import
         input: Utf8PathBuf,
+
+        /// List of remappings for file extensions, comma separated
+        /// e.g. "3ds=cci,bin=nes"
+        #[arg(short, long, value_delimiter = ',', value_parser = parse_key_val::<String, String>)]
+        remap_extensions: Vec<(String, String)>,
     },
     /// Search the database
     Search {
@@ -51,6 +61,19 @@ pub enum SearchType {
     },
 }
 
+fn parse_key_val<T, U>(s: &str) -> Result<(T, U), Box<dyn std::error::Error + Send + Sync + 'static>>
+where
+    T: std::str::FromStr,
+    T::Err: std::error::Error + Send + Sync + 'static,
+    U: std::str::FromStr,
+    U::Err: std::error::Error + Send + Sync + 'static,
+{
+    let pos = s
+        .find('=')
+        .ok_or_else(|| format!("invalid KEY=value: no `=` found in `{s}`"))?;
+    Ok((s[..pos].parse()?, s[pos + 1..].parse()?))
+}
+
 fn print_game_with_roms(game: &models::Game, roms: &[models::Rom]) {
     println!("\nGame:");
     println!("Name: {}", game.name);
@@ -73,16 +96,24 @@ fn print_game_with_roms(game: &models::Game, roms: &[models::Rom]) {
 
 pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> Result<()> {
     match command {
-        DbCommands::Initialize { input } => {
+        DbCommands::Initialize { input, remap_extensions } => {
             let mut db = database::Database::new(db_path).context("Failed to connect to database")?;
             db.initialize().context("Failed to initialize database")?;
-            let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
+            let mut data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
+            if !remap_extensions.is_empty() {
+                let remap: HashMap<String, String> = remap_extensions.iter().cloned().collect();
+                remap_datafile(&mut data, &remap).context("Failed to remap datafile")?;
+            }
             db.merge_data(data).context("Failed to merge data into database")?;
             println!("Initialize completed successfully");
         }
-        DbCommands::Import { input } => {
+        DbCommands::Import { input, remap_extensions } => {
             let mut db = database::check_for_database(db_path, debug)?;
-            let data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
+            let mut data = xml_parser::parse_file(input).context("Failed to parse XML file")?;
+            if !remap_extensions.is_empty() {
+                let remap: HashMap<String, String> = remap_extensions.iter().cloned().collect();
+                remap_datafile(&mut data, &remap).context("Failed to remap datafile")?;
+            }
             db.merge_data(data).context("Failed to merge data into database")?;
             println!("Import completed successfully");
         }
@@ -102,6 +133,26 @@ pub fn handle_command(db_path: &Utf8Path, debug: bool, command: &DbCommands) -> 
                 }
                 SearchType::Rom { name, crc, md5, sha1 } => {
                     search_roms(&db, name, crc, md5, sha1)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remap_datafile(data: &mut models::DataFile, remap_extensions: &HashMap<String, String>) -> Result<()> {
+    for game in &mut data.games {
+        for rom in &mut game.roms {
+            let mut iter = rom.name.rsplitn(2, '.');
+            let after = iter.next();
+            let before = iter.next();
+            if before == Some("") {
+                continue;
+            } else {
+                if let Some(extension) = before.and(after) {
+                    if let Some(new_extension) = remap_extensions.get(extension) {
+                        rom.name = format!("{}.{}", before.unwrap(), new_extension);
+                    }
                 }
             }
         }
